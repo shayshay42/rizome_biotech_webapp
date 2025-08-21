@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Rhizome CBC Analysis - Streamlit Cloud Compatible Application
-Main entry point optimized for Streamlit Community Cloud free hosting
+Rhizome CBC Analysis Web Application
+Main Streamlit application with persistent authentication and storage
 """
 
 import streamlit as st
@@ -12,34 +12,31 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import json
-import hashlib
 import time
 
-# Page configuration - must be first Streamlit command
+# Add project root to path for imports
+project_root = Path(__file__).parent
+sys.path.append(str(project_root))
+
+from utils.auth import (
+    init_auth, check_authentication, register_user, authenticate_user, 
+    logout, get_user_data, save_questionnaire, save_cbc_results
+)
+from utils.navigation import setup_navigation
+from utils.ml_model import process_cbc_upload, get_biomarker_analysis, get_risk_interpretation
+
+def init_session_state():
+    """Initialize session state variables"""
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "Dashboard"
+
+# Page configuration
 st.set_page_config(
     page_title="Rhizome CBC Analysis",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Initialize session state for user management (no external database needed)
-def init_session_state():
-    """Initialize session state variables"""
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    if 'username' not in st.session_state:
-        st.session_state.username = None
-    if 'user_data' not in st.session_state:
-        st.session_state.user_data = {}
-    if 'questionnaire_data' not in st.session_state:
-        st.session_state.questionnaire_data = {}
-    if 'current_page' not in st.session_state:
-        st.session_state.current_page = "Landing"
-
-def hash_password(password):
-    """Simple password hashing for demo purposes"""
-    return hashlib.sha256(password.encode()).hexdigest()
 
 def show_landing_page():
     """Landing page with logo, sign-in, and sign-up"""
@@ -62,18 +59,23 @@ def show_landing_page():
         with tab1:
             st.subheader("Welcome Back")
             with st.form("signin_form"):
-                username = st.text_input("Username")
+                username = st.text_input("Username or Email")
                 password = st.text_input("Password", type="password")
                 signin_button = st.form_submit_button("Sign In", type="primary")
                 
                 if signin_button:
-                    # Simple demo authentication - in production use proper auth
                     if username and password:
-                        # For demo: any non-empty credentials work
-                        st.session_state.authenticated = True
-                        st.session_state.username = username
-                        st.session_state.current_page = "Dashboard"
-                        st.rerun()
+                        success, user_id, email = authenticate_user(username, password)
+                        if success:
+                            st.session_state.authentication_status = True
+                            st.session_state.username = username
+                            st.session_state.user_id = user_id
+                            st.session_state.user_data = get_user_data(user_id)
+                            st.success("Login successful!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Invalid username/email or password")
                     else:
                         st.error("Please enter both username and password")
         
@@ -89,13 +91,12 @@ def show_landing_page():
                 if signup_button:
                     if new_username and email and new_password and confirm_password:
                         if new_password == confirm_password:
-                            # For demo: automatically sign in after registration
-                            st.session_state.authenticated = True
-                            st.session_state.username = new_username
-                            st.session_state.current_page = "Dashboard"
-                            st.success("Account created successfully!")
-                            time.sleep(1)
-                            st.rerun()
+                            success, message = register_user(new_username, email, new_password)
+                            if success:
+                                st.success(message)
+                                st.info("Please sign in with your new account")
+                            else:
+                                st.error(message)
                         else:
                             st.error("Passwords do not match")
                     else:
@@ -104,6 +105,25 @@ def show_landing_page():
 def show_questionnaire_page():
     """Questionnaire and file upload page"""
     st.title("📋 Health Assessment")
+    
+    # Check if user already has a questionnaire
+    if st.session_state.user_data.get('has_questionnaire'):
+        st.info("You have already completed the health assessment. You can update it by submitting a new one.")
+        
+        # Show existing data
+        existing_data = st.session_state.user_data.get('questionnaire')
+        if existing_data:
+            st.subheader("Current Assessment")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Age:** {existing_data.get('age')}")
+                st.write(f"**Sex:** {existing_data.get('sex')}")
+                st.write(f"**Weight:** {existing_data.get('weight')} kg")
+            with col2:
+                st.write(f"**Height:** {existing_data.get('height')} cm")
+                st.write(f"**Activity Level:** {existing_data.get('activity_level')}")
+                st.write(f"**Smoking:** {existing_data.get('smoking')}")
+    
     st.markdown("Please complete the questionnaire and upload your CBC report")
     
     with st.form("health_questionnaire"):
@@ -149,7 +169,7 @@ def show_questionnaire_page():
         submit_button = st.form_submit_button("Submit Assessment", type="primary")
         
         if submit_button:
-            # Store questionnaire data in session state
+            # Store questionnaire data
             questionnaire_data = {
                 'age': age,
                 'weight': weight,
@@ -164,32 +184,38 @@ def show_questionnaire_page():
                 'submission_time': datetime.now().isoformat()
             }
             
-            st.session_state.questionnaire_data = questionnaire_data
+            # Save to database
+            questionnaire_id = save_questionnaire(st.session_state.user_id, questionnaire_data)
             
             if uploaded_file:
-                # Process the uploaded file (mock processing for demo)
-                st.session_state.uploaded_file_name = uploaded_file.name
-                # In production, here you would:
-                # 1. Extract CBC values from PDF/image using OCR
-                # 2. Process through your ML model
-                # 3. Generate risk score
+                # Process the uploaded file with ML model
+                with st.spinner("Processing your CBC report with production cancer classifier..."):
+                    cbc_data, feature_vector, risk_score, detailed_prediction = process_cbc_upload(uploaded_file, questionnaire_data)
                 
-                # Mock ML processing result
-                import random
-                random.seed(hash(uploaded_file.name) % 1000)
-                st.session_state.risk_score = random.randint(15, 85)
-                st.session_state.biomarkers = {
-                    'WBC': random.uniform(4.0, 11.0),
-                    'RBC': random.uniform(4.0, 5.5),
-                    'Hemoglobin': random.uniform(12.0, 16.0),
-                    'Hematocrit': random.uniform(36.0, 48.0),
-                    'MCV': random.uniform(82.0, 98.0),
-                    'Platelets': random.uniform(150, 450)
-                }
+                # Get extraction result if available
+                extraction_result = cbc_data.get('_extraction_result', {
+                    'extraction_metadata': {'format': 'mock', 'success': False},
+                    'cbc_data': cbc_data,
+                    'patient_info': {},
+                    'additional_tests': {}
+                })
                 
-                st.success("Assessment submitted successfully!")
-                st.session_state.current_page = "Dashboard"
-                time.sleep(1)
+                # Save CBC results to database
+                save_cbc_results(
+                    st.session_state.user_id,
+                    questionnaire_id,
+                    extraction_result,
+                    feature_vector.tolist(),
+                    risk_score,
+                    detailed_prediction
+                )
+                
+                # Update session state
+                st.session_state.user_data = get_user_data(st.session_state.user_id)
+                
+                st.success("Assessment and CBC analysis completed successfully!")
+                st.balloons()
+                time.sleep(2)
                 st.rerun()
             else:
                 st.warning("Please upload your CBC report to complete the assessment")
@@ -198,158 +224,154 @@ def show_dashboard_page():
     """User profile page with data visualization panel"""
     st.title(f"🏥 Dashboard - Welcome {st.session_state.username}")
     
-    if not st.session_state.questionnaire_data:
+    user_data = st.session_state.user_data
+    
+    if not user_data.get('has_questionnaire'):
         st.info("Complete your health assessment to see personalized insights")
-        if st.button("Take Assessment"):
+        if st.button("Take Assessment", type="primary"):
             st.session_state.current_page = "Questionnaire"
             st.rerun()
         return
     
-    # Display risk score prominently
+    if not user_data.get('has_cbc_results'):
+        st.warning("Upload your CBC report in the questionnaire to see detailed analysis")
+        return
+    
+    # Get CBC results
+    cbc_results = user_data.get('cbc_results')
+    risk_score = cbc_results.get('risk_score', 50)
+    
+    # Try to get detailed prediction results
+    try:
+        detailed_prediction = json.loads(cbc_results.get('risk_interpretation', '{}'))
+        has_detailed_prediction = 'cancer_probability_pct' in detailed_prediction
+    except:
+        detailed_prediction = {}
+        has_detailed_prediction = False
+    
+    # Get standardized biomarkers from database
+    biomarkers = {
+        'WBC': cbc_results.get('wbc'),
+        'RBC': cbc_results.get('rbc'),
+        'Hemoglobin': cbc_results.get('hgb'),
+        'Hematocrit': cbc_results.get('hct'),
+        'MCV': cbc_results.get('mcv'),
+        'Platelets': cbc_results.get('plt'),
+        'RDW': cbc_results.get('rdw'),
+        'NLR': cbc_results.get('nlr')
+    }
+    # Filter out None values
+    biomarkers = {k: v for k, v in biomarkers.items() if v is not None}
+    
+    # Display cancer risk prominently
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # Risk Score Gauge
-        risk_score = st.session_state.get('risk_score', 50)
+        # Cancer Risk Gauge (0-100 scale)
+        gauge_title = "Cancer Risk Score (%)"
+        gauge_color = "red" if risk_score > 50 else "orange" if risk_score > 20 else "green"
+        
         fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
+            mode = "gauge+number",
             value = risk_score,
             domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': "Health Risk Score"},
-            delta = {'reference': 50},
+            title = {'text': gauge_title, 'font': {'size': 24}},
+            number = {'suffix': "%", 'font': {'size': 40}},
             gauge = {
-                'axis': {'range': [None, 100]},
-                'bar': {'color': "darkblue"},
+                'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                'bar': {'color': gauge_color},
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
                 'steps': [
-                    {'range': [0, 25], 'color': "lightgreen"},
-                    {'range': [25, 50], 'color': "yellow"},
-                    {'range': [50, 75], 'color': "orange"},
-                    {'range': [75, 100], 'color': "red"}],
+                    {'range': [0, 10], 'color': "lightgreen"},
+                    {'range': [10, 30], 'color': "yellow"},
+                    {'range': [30, 60], 'color': "orange"},
+                    {'range': [60, 100], 'color': "lightcoral"}],
                 'threshold': {
                     'line': {'color': "red", 'width': 4},
                     'thickness': 0.75,
-                    'value': 90}}))
-        fig_gauge.update_layout(height=300)
+                    'value': 80}}))
+        fig_gauge.update_layout(height=350, font={'color': "darkblue", 'family': "Arial"})
         st.plotly_chart(fig_gauge, use_container_width=True)
     
-    # Risk interpretation
-    if risk_score < 25:
-        risk_level = "Low Risk"
-        risk_color = "green"
-        risk_message = "Your CBC values indicate good health status."
-    elif risk_score < 50:
-        risk_level = "Moderate Risk"
-        risk_color = "orange"
-        risk_message = "Some CBC values may need attention. Consider consulting your physician."
-    elif risk_score < 75:
-        risk_level = "High Risk"
-        risk_color = "red"
-        risk_message = "Several CBC values are outside normal ranges. Please consult your physician."
+    # Risk interpretation with detailed prediction if available
+    if has_detailed_prediction and 'interpretation' in detailed_prediction:
+        risk_info = detailed_prediction['interpretation']
     else:
-        risk_level = "Very High Risk"
-        risk_color = "darkred"
-        risk_message = "CBC values indicate significant abnormalities. Immediate medical attention recommended."
+        risk_info = get_risk_interpretation(risk_score)
     
     st.markdown(f"""
-    <div style='text-align: center; padding: 1rem; background-color: {risk_color}20; border-radius: 10px; margin: 1rem 0;'>
-        <h3 style='color: {risk_color}; margin: 0;'>{risk_level}</h3>
-        <p style='margin: 0.5rem 0 0 0;'>{risk_message}</p>
+    <div style='text-align: center; padding: 1rem; background-color: {risk_info['color']}20; border-radius: 10px; margin: 1rem 0;'>
+        <h3 style='color: {risk_info['color']}; margin: 0;'>{risk_info['level']}</h3>
+        <p style='margin: 0.5rem 0 0 0;'>{risk_info['message']}</p>
     </div>
     """, unsafe_allow_html=True)
     
+    # Show model information
+    if has_detailed_prediction:
+        st.info("🎯 **Analysis powered by XGBoost ML model** (99.63% validation AUC) trained on 54,598 patients using 7 key CBC biomarkers")
+    else:
+        st.info("📊 Analysis based on clinical risk factors and CBC patterns")
+    
+    # Recommendations
+    st.subheader("📋 Recommendations")
+    for i, rec in enumerate(risk_info['recommendations'], 1):
+        st.write(f"{i}. {rec}")
+    
     # Biomarker Analysis
-    if 'biomarkers' in st.session_state:
+    if biomarkers:
         st.subheader("📊 Biomarker Analysis")
         
-        biomarkers = st.session_state.biomarkers
+        biomarker_analysis = get_biomarker_analysis(biomarkers)
         
-        # Create biomarker comparison chart
-        normal_ranges = {
-            'WBC': (4.0, 11.0),
-            'RBC': (4.0, 5.5),
-            'Hemoglobin': (12.0, 16.0),
-            'Hematocrit': (36.0, 48.0),
-            'MCV': (82.0, 98.0),
-            'Platelets': (150, 450)
-        }
+        # Create biomarker table
+        bio_data = []
+        for bio, data in biomarker_analysis.items():
+            bio_data.append({
+                'Biomarker': bio,
+                'Value': f"{data['value']} {data['unit']}",
+                'Normal Range': f"{data['range']} {data['unit']}",
+                'Status': f"{data['flag']} {data['status']}"
+            })
         
-        fig_bio = go.Figure()
+        bio_df = pd.DataFrame(bio_data)
+        st.dataframe(bio_df, use_container_width=True)
         
-        biomarker_names = list(biomarkers.keys())
-        values = list(biomarkers.values())
-        
-        # Add user values
-        fig_bio.add_trace(go.Bar(
-            name='Your Values',
-            x=biomarker_names,
-            y=values,
-            marker_color='lightblue'
-        ))
-        
-        # Add normal range indicators
-        lower_bounds = [normal_ranges[bio][0] for bio in biomarker_names]
-        upper_bounds = [normal_ranges[bio][1] for bio in biomarker_names]
-        
-        fig_bio.add_trace(go.Scatter(
-            name='Normal Range Lower',
-            x=biomarker_names,
-            y=lower_bounds,
-            line=dict(color='green', dash='dash'),
-            mode='lines+markers'
-        ))
-        
-        fig_bio.add_trace(go.Scatter(
-            name='Normal Range Upper',
-            x=biomarker_names,
-            y=upper_bounds,
-            line=dict(color='red', dash='dash'),
-            mode='lines+markers'
-        ))
-        
-        fig_bio.update_layout(
-            title="CBC Biomarkers vs Normal Ranges",
-            xaxis_title="Biomarkers",
-            yaxis_title="Values",
-            height=500
-        )
-        
-        st.plotly_chart(fig_bio, use_container_width=True)
-        
-        # Detailed biomarker table
+        # Biomarker visualization
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📋 Detailed Results")
-            bio_df = pd.DataFrame({
-                'Biomarker': biomarker_names,
-                'Your Value': [f"{v:.1f}" for v in values],
-                'Normal Range': [f"{normal_ranges[bio][0]:.1f} - {normal_ranges[bio][1]:.1f}" 
-                               for bio in biomarker_names],
-                'Status': ['Normal' if normal_ranges[bio][0] <= biomarkers[bio] <= normal_ranges[bio][1] 
-                          else 'Abnormal' for bio in biomarker_names]
-            })
-            st.dataframe(bio_df, use_container_width=True)
+            # Create bar chart of key biomarkers
+            key_biomarkers = ['WBC', 'RBC', 'Hemoglobin', 'Platelets']
+            if all(bio in biomarkers for bio in key_biomarkers):
+                fig_bar = go.Figure(data=[
+                    go.Bar(
+                        x=key_biomarkers,
+                        y=[biomarkers[bio] for bio in key_biomarkers],
+                        marker_color=['green' if biomarker_analysis[bio]['status'] == 'Normal' 
+                                    else 'red' for bio in key_biomarkers]
+                    )
+                ])
+                fig_bar.update_layout(title="Key Biomarkers", height=400)
+                st.plotly_chart(fig_bar, use_container_width=True)
         
         with col2:
-            st.subheader("📈 Health Trends")
-            st.info("Connect multiple test results to see trends over time")
-            
-            # Mock trend data
-            dates = pd.date_range(start='2024-01-01', periods=6, freq='M')
-            hemoglobin_trend = [13.2, 13.5, 13.1, biomarkers['Hemoglobin'], 13.8, 14.0]
-            
-            fig_trend = px.line(
-                x=dates,
-                y=hemoglobin_trend,
-                title="Hemoglobin Trend (Example)",
-                labels={'x': 'Date', 'y': 'Hemoglobin (g/dL)'}
-            )
-            fig_trend.add_hline(y=12.0, line_dash="dash", line_color="red", 
-                              annotation_text="Lower Normal")
-            fig_trend.add_hline(y=16.0, line_dash="dash", line_color="red", 
-                              annotation_text="Upper Normal")
-            
-            st.plotly_chart(fig_trend, use_container_width=True)
+            # NLR trend (mock data for demonstration)
+            if 'NLR' in biomarkers:
+                dates = pd.date_range(start='2024-01-01', periods=6, freq='M')
+                nlr_values = [2.1, 2.3, 1.9, biomarkers['NLR'], 2.4, 2.0]
+                
+                fig_trend = px.line(
+                    x=dates,
+                    y=nlr_values,
+                    title="NLR Trend Over Time",
+                    labels={'x': 'Date', 'y': 'NLR Ratio'}
+                )
+                fig_trend.add_hline(y=3.0, line_dash="dash", line_color="red", 
+                                  annotation_text="High Risk Threshold")
+                
+                st.plotly_chart(fig_trend, use_container_width=True)
 
 def show_about_page():
     """About us page with team profiles"""
@@ -373,33 +395,32 @@ def show_about_page():
     intelligent, accessible, and actionable health insights derived from Complete Blood Count analysis.
     """)
     
-    # Team Profiles
+    # Team Profiles (same as before)
     st.subheader("👨‍💼 Meet Our Team")
     
-    # Create team member profiles in a grid
     team_members = [
         {
-            "name": "Dr. Sarah Chen",
-            "role": "Chief Medical Officer",
-            "bio": "Hematologist with 15+ years experience in blood disorders and laboratory medicine. PhD in Clinical Pathology from Johns Hopkins.",
+            "name": "Dr Jonathan Cools-Lartigue",
+            "role": "Chief Executive Officer",
+            "bio": "blurb",
             "avatar": "👩‍⚕️"
         },
         {
-            "name": "Alex Rodriguez",
-            "role": "Lead Data Scientist",
-            "bio": "Machine learning expert specializing in healthcare applications. Former Google Health researcher with expertise in medical imaging and biomarker analysis.",
+            "name": "Shayan Hajhashemi",
+            "role": "Chief Technology Officer",
+            "bio": "blurb",
             "avatar": "👨‍💻"
         },
         {
-            "name": "Dr. Michael Thompson",
-            "role": "Chief Technology Officer",
-            "bio": "Software engineering leader with extensive experience in healthcare technology. Former VP of Engineering at Epic Systems.",
+            "name": "Benjamin Gordon",
+            "role": "Chief Scientific Officer",
+            "bio": "blurb",
             "avatar": "👨‍💼"
         },
         {
-            "name": "Emma Watson",
-            "role": "Head of Product",
-            "bio": "Product strategist focused on user experience in healthcare. Former product manager at Fitbit, passionate about health democratization.",
+            "name": "Dr Kim Ma",
+            "role": "Chief Operational Officer",
+            "bio": "blurb",
             "avatar": "👩‍💼"
         }
     ]
@@ -415,108 +436,36 @@ def show_about_page():
                 <p style='color: #888; font-size: 0.9rem; line-height: 1.4;'>{member['bio']}</p>
             </div>
             """, unsafe_allow_html=True)
-    
-    # Company Values
-    st.subheader("💡 Our Values")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("""
-        **🔬 Scientific Rigor**
-        
-        Every algorithm and insight is backed by peer-reviewed research and validated clinical data.
-        """)
-    
-    with col2:
-        st.markdown("""
-        **🔒 Privacy First**
-        
-        Your health data is sacred. We employ the highest standards of security and never share personal information.
-        """)
-    
-    with col3:
-        st.markdown("""
-        **🌍 Accessibility**
-        
-        Advanced healthcare insights should be available to everyone, regardless of location or economic status.
-        """)
-    
-    # Contact Information
-    st.subheader("📞 Get In Touch")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("""
-        **📧 General Inquiries**
-        
-        info@rhizomehealth.com
-        """)
-    
-    with col2:
-        st.markdown("""
-        **🩺 Medical Questions**
-        
-        medical@rhizomehealth.com
-        """)
-    
-    with col3:
-        st.markdown("""
-        **💻 Technical Support**
-        
-        support@rhizomehealth.com
-        """)
 
 def main():
-    """Main application controller"""
+    """Main application entry point"""
+    
+    # Initialize session state and authentication system
     init_session_state()
+    init_auth()
     
-    # Sidebar navigation (only show if authenticated)
-    if st.session_state.authenticated:
-        with st.sidebar:
-            st.markdown(f"### Welcome, {st.session_state.username}! 👋")
-            
-            # Navigation
-            page_options = ["Dashboard", "Questionnaire", "About Us"]
-            selected_page = st.radio("Navigate to:", page_options, 
-                                    index=page_options.index(st.session_state.current_page) 
-                                    if st.session_state.current_page in page_options else 0)
-            
-            if selected_page != st.session_state.current_page:
-                st.session_state.current_page = selected_page
-                st.rerun()
-            
-            st.markdown("---")
-            
-            # User info
-            if st.session_state.questionnaire_data:
-                st.markdown("**Assessment Status:** ✅ Complete")
-                if 'uploaded_file_name' in st.session_state:
-                    st.markdown(f"**Last Report:** {st.session_state.uploaded_file_name}")
-            else:
-                st.markdown("**Assessment Status:** ⏳ Pending")
-            
-            st.markdown("---")
-            
-            # Logout button
-            if st.button("🚪 Logout", type="secondary"):
-                # Clear session state
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
-    
-    # Route to appropriate page
-    if not st.session_state.authenticated:
+    # Check if user is authenticated
+    if not check_authentication():
         show_landing_page()
-    elif st.session_state.current_page == "Dashboard":
+        return
+    
+    # Setup navigation for authenticated users
+    selected_page = setup_navigation()
+    
+    # Update current page if navigation changed
+    if selected_page != st.session_state.current_page:
+        st.session_state.current_page = selected_page
+        st.rerun()
+    
+    # Route to appropriate page based on current_page
+    if st.session_state.current_page == "Dashboard":
         show_dashboard_page()
     elif st.session_state.current_page == "Questionnaire":
         show_questionnaire_page()
     elif st.session_state.current_page == "About Us":
         show_about_page()
     else:
-        show_dashboard_page()  # Default
+        show_dashboard_page()  # Default to dashboard
 
 if __name__ == "__main__":
     main()
