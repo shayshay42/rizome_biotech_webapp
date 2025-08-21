@@ -90,6 +90,7 @@ class CancerClassifier:
     
     def extract_features(self, cbc_data: Dict) -> Dict:
         """Extract the 7 required features from CBC data"""
+        import math
         
         # Map from our internal CBC format to model features
         feature_mapping = {
@@ -102,7 +103,19 @@ class CancerClassifier:
             'WBC': ['WBC', 'GB']
         }
         
+        # Population-based imputation values (derived from healthy cohort analysis)
+        imputation_values = {
+            'HGB': 140.5,  # g/L - healthy population mean
+            'MCV': 88.2,   # fL - healthy population mean  
+            'MONO': 0.6,   # 10^9/L - healthy population mean
+            'NLR': 2.8,    # ratio - healthy population mean
+            'PLT': 285.0,  # 10^9/L - healthy population mean
+            'RDW': 13.5,   # % - healthy population mean
+            'WBC': 7.2     # 10^9/L - healthy population mean
+        }
+        
         extracted_features = {}
+        missing_features = []
         
         for model_feature, possible_names in feature_mapping.items():
             value = None
@@ -116,29 +129,42 @@ class CancerClassifier:
                         value = cbc_data[name]
                     break
             
-            if value is not None:
-                extracted_features[model_feature] = float(value)
+            # Check if value is valid (not None, not NaN)
+            if value is not None and not (isinstance(value, float) and math.isnan(value)):
+                try:
+                    extracted_features[model_feature] = float(value)
+                except (ValueError, TypeError):
+                    # Invalid value, use imputation
+                    extracted_features[model_feature] = imputation_values[model_feature]
+                    missing_features.append(model_feature)
             else:
-                # Use population mean as fallback
-                fallback_values = {
-                    'HGB': 140.5, 'MCV': 88.2, 'MONO': 0.6, 'NLR': 2.8,
-                    'PLT': 285.0, 'RDW': 13.5, 'WBC': 7.2
-                }
-                extracted_features[model_feature] = fallback_values[model_feature]
+                # Missing or NaN value, use imputation
+                extracted_features[model_feature] = imputation_values[model_feature]
+                missing_features.append(model_feature)
+        
+        # Add metadata about imputation
+        extracted_features['_missing_features'] = missing_features
+        extracted_features['_imputed_count'] = len(missing_features)
         
         return extracted_features
     
     def predict(self, features: Dict) -> Dict:
         """Make cancer prediction using the trained model"""
         
-        # Validate input
+        # Extract imputation metadata
+        missing_features = features.pop('_missing_features', [])
+        imputed_count = features.pop('_imputed_count', 0)
+        
+        # Validate input (excluding metadata fields)
         is_valid, message = self.validate_input(features)
         if not is_valid:
             return {
                 'error': message,
                 'prediction': 0,
                 'cancer_probability': 0.0,
-                'confidence': 0.0
+                'confidence': 0.0,
+                'missing_features': missing_features,
+                'imputed_count': imputed_count
             }
         
         try:
@@ -147,6 +173,11 @@ class CancerClassifier:
             
             # Since we don't have the actual trained model, simulate realistic predictions
             cancer_probability = self._simulate_prediction(features)
+            
+            # Adjust confidence based on number of imputed values
+            base_confidence = max(cancer_probability, 1 - cancer_probability)
+            confidence_penalty = imputed_count * 0.1  # 10% confidence reduction per missing feature
+            adjusted_confidence = max(0.5, base_confidence - confidence_penalty)
             
             # Convert to 0-100 scale
             cancer_probability_pct = cancer_probability * 100
@@ -168,16 +199,25 @@ class CancerClassifier:
                 risk_level = "Very High"
                 risk_color = "darkred"
             
+            # Create imputation warning if needed
+            imputation_warning = None
+            if imputed_count > 0:
+                imputation_warning = f"Note: {imputed_count} biomarker(s) were missing and estimated using population averages: {', '.join(missing_features)}. This may affect prediction accuracy."
+            
             return {
                 'prediction': 1 if cancer_probability > 0.5 else 0,
                 'prediction_label': 'Cancer Risk Detected' if cancer_probability > 0.5 else 'Low Cancer Risk',
                 'cancer_probability': cancer_probability,
                 'cancer_probability_pct': round(cancer_probability_pct, 1),
                 'healthy_probability': 1 - cancer_probability,
-                'confidence': max(cancer_probability, 1 - cancer_probability),
+                'confidence': adjusted_confidence,
+                'confidence_pct': round(adjusted_confidence * 100, 1),
                 'risk_level': risk_level,
                 'risk_color': risk_color,
-                'model_features': features
+                'model_features': features,
+                'missing_features': missing_features,
+                'imputed_count': imputed_count,
+                'imputation_warning': imputation_warning
             }
             
         except Exception as e:
@@ -185,7 +225,9 @@ class CancerClassifier:
                 'error': f"Prediction failed: {str(e)}",
                 'prediction': 0,
                 'cancer_probability': 0.0,
-                'confidence': 0.0
+                'confidence': 0.0,
+                'missing_features': missing_features,
+                'imputed_count': imputed_count
             }
     
     def _simulate_prediction(self, features: Dict) -> float:
