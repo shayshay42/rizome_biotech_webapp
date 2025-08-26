@@ -145,32 +145,48 @@ def register_user(username, email, password):
     if len(password) < 6:
         return False, "Password must be at least 6 characters"
     
-    db_path = Path(__file__).parent.parent / "data" / "users.db"
-    conn = sqlite3.connect(str(db_path))
+    from .database import DatabaseManager
+    
+    db = DatabaseManager()
+    conn = db.get_connection()
     cursor = conn.cursor()
+    
+    # Use appropriate placeholder syntax based on database type
+    placeholder = "%s" if db.db_type == 'postgresql' else "?"
     
     try:
         password_hash = hash_password(password)
         cursor.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
+            f"INSERT INTO users (username, email, password_hash) VALUES ({placeholder}, {placeholder}, {placeholder})",
             (username, email, password_hash)
         )
         conn.commit()
-        user_id = cursor.lastrowid
+        
+        if db.db_type == 'postgresql':
+            cursor.execute("SELECT lastval()")
+            user_id = cursor.fetchone()[0]
+        else:
+            user_id = cursor.lastrowid
+            
         conn.close()
         return True, f"Registration successful! User ID: {user_id}"
-    except sqlite3.IntegrityError:
+    except Exception as e:
         conn.close()
         return False, "Username or email already exists"
 
 def authenticate_user(username, password):
     """Authenticate user login"""
-    db_path = Path(__file__).parent.parent / "data" / "users.db"
-    conn = sqlite3.connect(str(db_path))
+    from .database import DatabaseManager
+    
+    db = DatabaseManager()
+    conn = db.get_connection()
     cursor = conn.cursor()
     
+    # Use appropriate placeholder syntax based on database type
+    placeholder = "%s" if db.db_type == 'postgresql' else "?"
+    
     cursor.execute(
-        "SELECT id, password_hash, email FROM users WHERE username = ? OR email = ?",
+        f"SELECT id, password_hash, email FROM users WHERE username = {placeholder} OR email = {placeholder}",
         (username, username)
     )
     result = cursor.fetchone()
@@ -179,14 +195,18 @@ def authenticate_user(username, password):
         user_id = result[0]
         email = result[2]
         
-        # Update last login
-        cursor.execute(
-            "UPDATE users SET last_login = ? WHERE id = ?",
-            (datetime.now(), user_id)
-        )
-        conn.commit()
+        # Try to update last login (ignore if column doesn't exist)
+        try:
+            cursor.execute(
+                f"UPDATE users SET last_login = {placeholder} WHERE id = {placeholder}",
+                (datetime.now(), user_id)
+            )
+            conn.commit()
+        except Exception:
+            # Column might not exist, continue without error
+            pass
+            
         conn.close()
-        
         return True, user_id, email
     
     conn.close()
@@ -194,22 +214,25 @@ def authenticate_user(username, password):
 
 def get_user_data(user_id):
     """Get user's questionnaire and CBC data"""
-    db_path = Path(__file__).parent.parent / "data" / "users.db"
-    conn = sqlite3.connect(str(db_path))
+    from .database import DatabaseManager
     
-    # Get latest questionnaire
-    questionnaire_df = pd.read_sql_query(
-        "SELECT * FROM questionnaires WHERE user_id = ? ORDER BY submitted_at DESC LIMIT 1",
-        conn, params=(user_id,)
-    )
+    db = DatabaseManager()
+    conn = db.get_connection()
     
-    # Get latest CBC results
-    cbc_df = pd.read_sql_query(
-        "SELECT * FROM cbc_results WHERE user_id = ? ORDER BY processed_at DESC LIMIT 1",
-        conn, params=(user_id,)
-    )
-    
-    conn.close()
+    try:
+        # Get latest questionnaire
+        questionnaire_df = pd.read_sql_query(
+            "SELECT * FROM questionnaires WHERE user_id = %s ORDER BY created_at DESC LIMIT 1" if db.db_type == 'postgresql' else "SELECT * FROM questionnaires WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            conn, params=(user_id,)
+        )
+        
+        # Get latest CBC results
+        cbc_df = pd.read_sql_query(
+            "SELECT * FROM cbc_results WHERE user_id = %s ORDER BY created_at DESC LIMIT 1" if db.db_type == 'postgresql' else "SELECT * FROM cbc_results WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            conn, params=(user_id,)
+        )
+    finally:
+        conn.close()
     
     user_data = {
         'has_questionnaire': len(questionnaire_df) > 0,
@@ -222,8 +245,10 @@ def get_user_data(user_id):
 
 def save_questionnaire(user_id, questionnaire_data):
     """Save questionnaire data to database"""
-    db_path = Path(__file__).parent.parent / "data" / "users.db"
-    conn = sqlite3.connect(str(db_path))
+    from .database import DatabaseManager
+    
+    db = DatabaseManager()
+    conn = db.get_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -253,8 +278,10 @@ def save_questionnaire(user_id, questionnaire_data):
 
 def save_cbc_results(user_id, questionnaire_id, extraction_result, cbc_vector, risk_score, risk_interpretation):
     """Save CBC analysis results to database with enhanced schema"""
-    db_path = Path(__file__).parent.parent / "data" / "users.db"
-    conn = sqlite3.connect(str(db_path))
+    from .database import DatabaseManager
+    
+    db = DatabaseManager()
+    conn = db.get_connection()
     cursor = conn.cursor()
     
     # Extract standardized values from cbc_data
