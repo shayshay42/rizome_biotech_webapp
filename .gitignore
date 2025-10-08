@@ -33,6 +33,11 @@ ENV/
 # Streamlit
 .streamlit/secrets.toml
 
+# Database files (local SQLite)
+*.db
+data/*.db
+data/*.backup.db
+
 # IDEs
 .vscode/
 .idea/
