@@ -164,7 +164,8 @@ def register_user(username, email, password):
         
         if db.db_type == 'postgresql':
             cursor.execute("SELECT lastval()")
-            user_id = cursor.fetchone()[0]
+            result = cursor.fetchone()
+            user_id = result['lastval'] if isinstance(result, dict) else result[0]
         else:
             user_id = cursor.lastrowid
             
@@ -190,10 +191,21 @@ def authenticate_user(username, password):
         (username, username)
     )
     result = cursor.fetchone()
-    
-    if result and verify_password(password, result[1]):
-        user_id = result[0]
-        email = result[2]
+
+    if result:
+        # Handle both dict (PostgreSQL with RealDictCursor) and tuple (SQLite) results
+        if isinstance(result, dict):
+            password_hash = result['password_hash']
+            user_id = result['id']
+            email = result['email']
+        else:
+            password_hash = result[1]
+            user_id = result[0]
+            email = result[2]
+
+        if not verify_password(password, password_hash):
+            conn.close()
+            return False, None, None
         
         # Try to update last login (ignore if column doesn't exist)
         try:
