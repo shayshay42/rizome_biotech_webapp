@@ -130,6 +130,9 @@ def hash_password(password):
 
 def verify_password(password, hashed):
     """Verify password against hash"""
+    # Handle both str (PostgreSQL) and bytes (SQLite) for hashed password
+    if isinstance(hashed, str):
+        hashed = hashed.encode('utf-8')
     return bcrypt.checkpw(password.encode('utf-8'), hashed)
 
 def validate_email(email):
@@ -170,7 +173,7 @@ def register_user(username, email, password):
             user_id = cursor.lastrowid
             
         conn.close()
-        return True, f"Registration successful! User ID: {user_id}"
+        return True, "Registration successful! Please sign in with your credentials."
     except Exception as e:
         conn.close()
         return False, "Username or email already exists"
