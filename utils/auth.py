@@ -126,7 +126,9 @@ def init_user_db():
 
 def hash_password(password):
     """Hash password using bcrypt"""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    # Return as string for database storage (decode bytes to str)
+    return hashed.decode('utf-8')
 
 def verify_password(password, hashed):
     """Verify password against hash"""
