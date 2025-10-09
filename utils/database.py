@@ -366,30 +366,22 @@ def save_cbc_data(user_id: int, questionnaire_id: int, cbc_data: Dict,
             test_date = datetime.now().date()
         elif hasattr(test_date, 'date'):  # Handle datetime objects
             test_date = test_date.date()
-        
-        query = """
-        INSERT INTO cbc_results (
-            user_id, questionnaire_id, test_date, file_format, extraction_method,
-            wbc, rbc, hgb, hct, mcv, mch, mchc, rdw, plt, mpv,
-            neut_abs, lymph_abs, mono_abs, eos_abs, baso_abs,
-            neut_pct, lymph_pct, mono_pct, eos_pct, baso_pct,
-            nlr, nrbc_abs, nrbc_pct
-        ) VALUES (
-            ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?, ?
-        )
-        """
-        
+
         # Extract values handling both dict and plain values
         def get_value(key):
             val = cbc_data.get(key)
             if isinstance(val, dict):
                 return val.get('value')
             return val
-        
+
+        columns = [
+            'user_id', 'questionnaire_id', 'test_date', 'file_format', 'extraction_method',
+            'wbc', 'rbc', 'hgb', 'hct', 'mcv', 'mch', 'mchc', 'rdw', 'plt', 'mpv',
+            'neut_abs', 'lymph_abs', 'mono_abs', 'eos_abs', 'baso_abs',
+            'neut_pct', 'lymph_pct', 'mono_pct', 'eos_pct', 'baso_pct',
+            'nlr', 'nrbc_abs', 'nrbc_pct'
+        ]
+
         params = (
             user_id, questionnaire_id, test_date, file_format, "universal_extractor",
             get_value('WBC'), get_value('RBC'),
@@ -405,17 +397,27 @@ def save_cbc_data(user_id: int, questionnaire_id: int, cbc_data: Dict,
             get_value('NLR'), get_value('NRBC_ABS'),
             get_value('NRBC_PCT')
         )
-        
-        db.execute_query(query, params)
-        
-        # Get the ID of the inserted row
-        result = db.execute_query(
-            "SELECT last_insert_rowid() as id" if db.db_type == 'sqlite' else "SELECT lastval() as id",
-            fetch='one'
-        )
-        
-        return result[0] if result else None
-        
+
+        placeholder = "%s" if db.db_type == 'postgresql' else "?"
+        placeholders = ', '.join([placeholder] * len(columns))
+        base_query = f"""
+        INSERT INTO cbc_results ({', '.join(columns)})
+        VALUES ({placeholders})
+        """
+
+        if db.db_type == 'postgresql':
+            query = base_query + " RETURNING id"
+            result = db.execute_query(query, params, fetch='one')
+            if isinstance(result, dict):
+                return result.get('id')
+            return result[0] if result else None
+        else:
+            db.execute_query(base_query, params)
+            result = db.execute_query("SELECT last_insert_rowid() as id", fetch='one')
+            if isinstance(result, dict):
+                return result.get('id')
+            return result[0] if result else None
+
     except Exception as e:
         print(f"Error saving CBC data: {e}")
         return None

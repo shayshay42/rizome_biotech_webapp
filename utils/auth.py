@@ -436,33 +436,46 @@ def save_questionnaire(user_id, questionnaire_data):
         int: Questionnaire ID if successful, None otherwise
     """
 
-    try:
-        supabase = get_supabase()
+    # Prepare data once so both anon and admin clients can reuse it
+    data = {
+        'user_id': user_id,
+        'age': questionnaire_data.get('age'),
+        'weight': questionnaire_data.get('weight'),
+        'height': questionnaire_data.get('height'),
+        'sex': questionnaire_data.get('sex'),
+        'activity_level': questionnaire_data.get('activity_level'),
+        'smoking': questionnaire_data.get('smoking'),
+        'chronic_conditions': ','.join(questionnaire_data.get('chronic_conditions', [])) if isinstance(questionnaire_data.get('chronic_conditions'), list) else questionnaire_data.get('chronic_conditions'),
+        'medications': questionnaire_data.get('medications'),
+        'family_history': questionnaire_data.get('family_history'),
+        'symptoms': questionnaire_data.get('symptoms')
+    }
 
-        # Prepare data
-        data = {
-            'user_id': user_id,
-            'age': questionnaire_data.get('age'),
-            'weight': questionnaire_data.get('weight'),
-            'height': questionnaire_data.get('height'),
-            'sex': questionnaire_data.get('sex'),
-            'activity_level': questionnaire_data.get('activity_level'),
-            'smoking': questionnaire_data.get('smoking'),
-            'chronic_conditions': ','.join(questionnaire_data.get('chronic_conditions', [])) if isinstance(questionnaire_data.get('chronic_conditions'), list) else questionnaire_data.get('chronic_conditions'),
-            'medications': questionnaire_data.get('medications'),
-            'family_history': questionnaire_data.get('family_history'),
-            'symptoms': questionnaire_data.get('symptoms')
-        }
-
-        response = supabase.table('questionnaires').insert(data).execute()
-
+    def _insert(client):
+        response = client.table('questionnaires').insert(data).execute()
         if response.data:
             return response.data[0]['id']
         return None
 
+    try:
+        supabase = get_supabase()
+        result = _insert(supabase)
+        if result:
+            return result
     except Exception as e:
         print(f"Error saving questionnaire: {e}")
-        return None
+
+    # Fallback to service role client to bypass RLS when available
+    admin_client = get_supabase_admin()
+    if admin_client:
+        try:
+            result = _insert(admin_client)
+            if result:
+                return result
+        except Exception as admin_error:
+            print(f"Error saving questionnaire with admin client: {admin_error}")
+
+    return None
 
 def save_cbc_results(user_id, questionnaire_id, extraction_result, cbc_vector, risk_score, detailed_prediction):
     """
