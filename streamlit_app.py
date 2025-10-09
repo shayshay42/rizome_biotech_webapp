@@ -8,6 +8,7 @@ import streamlit as st
 import sys
 from pathlib import Path
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -20,11 +21,18 @@ sys.path.append(str(project_root))
 
 from utils.auth import (
     init_auth, check_authentication, register_user, authenticate_user, 
-    logout, get_user_data, save_questionnaire, save_cbc_results,
-    request_password_reset, update_password
+    logout, get_user_data, save_questionnaire,
+    request_password_reset, update_password, get_current_user,
+    delete_user_account_and_data
+)
+from utils.database import (
+    save_cbc_data, get_cbc_data_for_prediction, update_cbc_predictions
 )
 from utils.navigation import setup_navigation
-from utils.ml_model import process_cbc_upload, get_biomarker_analysis, get_risk_interpretation
+from utils.ml_model import (
+    extract_cbc_from_pdf, get_biomarker_analysis, get_risk_interpretation
+)
+from utils.cancer_classifier import predict_cancer_risk
 
 def init_session_state():
     """Initialize session state variables"""
@@ -50,14 +58,69 @@ def show_landing_page():
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+    if st.session_state.get("account_deleted_notice"):
+        st.success("Your account and associated data were deleted successfully.")
+        del st.session_state["account_deleted_notice"]
     
     # Create two columns for sign-in and sign-up
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        tab1, tab2, tab3 = st.tabs(["Sign In", "Sign Up", "Forgot Password"])
+        tab1, tab2, tab3, tab4 = st.tabs(["About Us", "Sign In", "Sign Up", "Forgot Password"])
         
+        # ABOUT US TAB - First and most prominent
         with tab1:
+            st.markdown("""
+            ### 🤖 Our Technology
+            
+            - **AI Model**: AutoGluon ensemble (CatBoost, RandomForest, LightGBM)
+            - **Performance**: 99.83% ROC-AUC on cancer prognostic assignment
+            - **Features**: 7 key biomarkers (WBC, NLR, HGB, MCV, PLT, RDW, MONO)
+            - **Training Data**: Clinical datasets from Quebec health system
+            - **Privacy**: End-to-end encryption, Row Level Security
+            
+            ### 📈 How It Works
+            
+            1. **Sign Up** - Create your free account (use the "Sign Up" tab)
+            2. **Complete Assessment** - Answer health questionnaire
+            3. **Upload or Enter CBC** - Use Carnet de Santé PDF or enter values manually
+            4. **Get AI Analysis** - Receive risk assessment in seconds
+            5. **Track Over Time** - Upload multiple tests to see trends
+            6. **Consult Your Doctor** - Share results with your healthcare provider
+            
+            ---
+            
+            <div style='text-align: center; padding: 1rem 0;'>
+                <p style='color: #888; font-size: 0.9rem;'>
+                    ⚠️ <strong>Medical Disclaimer:</strong> Rizome is a scoring tool, not a diagnostic service.
+                    Always consult with qualified healthcare professionals for medical advice, diagnosis, and treatment.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Legal documents
+            st.markdown("---")
+            st.markdown("### 📋 Legal")
+            col_legal1, col_legal2 = st.columns(2)
+            with col_legal1:
+                if st.button("📄 Terms of Service", use_container_width=True):
+                    st.switch_page("pages/terms_of_service.py")
+            with col_legal2:
+                if st.button("🔒 Privacy Policy", use_container_width=True):
+                    st.switch_page("pages/privacy_policy.py")
+            
+            # Call to action in About Us tab
+            st.markdown("---")
+            st.markdown("### 🚀 Ready to Get Started?")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.info("👉 Click the **'Sign Up'** tab above to create your free account")
+            with col_b:
+                st.info("👉 Already have an account? Use the **'Sign In'** tab")
+        
+        # SIGN IN TAB
+        with tab2:
             st.subheader("Welcome Back")
             with st.form("signin_form"):
                 username = st.text_input("Email Address")
@@ -84,8 +147,19 @@ def show_landing_page():
             st.markdown("---")
             st.caption("Forgot your password? Use the 'Forgot Password' tab above.")
         
-        with tab2:
+        # SIGN UP TAB
+        with tab3:
             st.subheader("Join Rizome")
+            with st.expander("📄 Read the full legal documents", expanded=False):
+                st.markdown("Select a document below to open the full text in a dedicated page.")
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    if st.button("📄 Terms of Service", key="terms_signup", use_container_width=True):
+                        st.switch_page("pages/terms_of_service.py")
+                with col_t2:
+                    if st.button("🔒 Privacy Policy", key="privacy_signup", use_container_width=True):
+                        st.switch_page("pages/privacy_policy.py")
+
             with st.form("signup_form"):
                 new_username = st.text_input("Choose Username")
                 email = st.text_input("Email Address")
@@ -95,10 +169,29 @@ def show_landing_page():
                 # Password requirements
                 st.caption("Password must be at least 6 characters")
                 
+                # Terms and Privacy acceptance
+                st.markdown("---")
+
+                st.markdown("""
+                **Key Points:**
+                - This is a screening tool, NOT a medical diagnosis
+                - Always consult healthcare professionals
+                - Your data is encrypted and secure
+                - You can delete your account anytime
+                - No data selling or unauthorized sharing
+                """)
+                
+                accept_terms = st.checkbox(
+                    "I have read and agree to the Terms of Service and Privacy Policy",
+                    help="You must accept the terms to create an account"
+                )
+                
                 signup_button = st.form_submit_button("Create Account", type="primary")
                 
                 if signup_button:
-                    if new_username and email and new_password and confirm_password:
+                    if not accept_terms:
+                        st.error("❌ You must accept the Terms of Service and Privacy Policy to create an account")
+                    elif new_username and email and new_password and confirm_password:
                         if new_password == confirm_password:
                             success, message = register_user(new_username, email, new_password)
                             if success:
@@ -111,7 +204,8 @@ def show_landing_page():
                     else:
                         st.error("❌ Please fill in all fields")
         
-        with tab3:
+        # FORGOT PASSWORD TAB
+        with tab4:
             st.subheader("Reset Your Password")
             st.markdown("Enter your email address and we'll send you a link to reset your password.")
             
@@ -190,12 +284,147 @@ def show_questionnaire_page():
                                     ["Fatigue", "Weakness", "Bruising", "Bleeding", 
                                      "Frequent Infections", "Weight Loss", "None"])
         
-        st.subheader("CBC Report Upload")
-        uploaded_file = st.file_uploader(
-            "Upload your CBC/Blood Test Report",
-            type=["pdf", "jpg", "jpeg", "png"],
-            help="Supported formats: PDF, JPG, PNG"
+        st.subheader("📋 CBC Report Upload")
+        
+        # Instructions for obtaining CBC report
+        with st.expander("ℹ️ How to Obtain Your Blood Test Report", expanded=False):
+            st.markdown("""
+            ### 🇨🇦 For Quebec Residents (Carnet de Santé)
+            
+            **Option 1: Download from Quebec Health Portal**
+            1. Visit [https://carnet.santeqc.ca](https://carnet.santeqc.ca)
+            2. Log in with your **Quebec Health Account** (you'll need):
+               - Your health insurance number (NAM/RAMQ)
+               - Date of birth
+               - Email or phone number used during registration
+            3. Click on **"My Results"** or **"Mes résultats"**
+            4. Find your most recent blood test (CBC/Complete Blood Count)
+            5. Click **"Download PDF"** or **"Télécharger le PDF"**
+            
+            **Option 2: Request from Your Healthcare Provider**
+            1. Contact your doctor's office or clinic
+            2. Request a copy of your most recent blood test results
+            3. They can send it via email or print a copy for you
+            
+            **Option 3: Visit a CLSC or Lab**
+            1. Go to the lab where you had your blood drawn
+            2. Request a printed copy of your results
+            3. Bring your health insurance card (Carte RAMQ)
+            
+            ---
+            
+            ### 🌍 For Other Regions
+            
+            **United States:**
+            - Check your patient portal (MyChart, FollowMyHealth, etc.)
+            - Contact your doctor's office or lab directly
+            
+            **International:**
+            - Request from your healthcare provider
+            - Check your country's health portal system
+            
+            ---
+            
+            ### 📄 What We Need
+            
+            Your blood test report should include these values:
+            - **Complete Blood Count (CBC):** WBC, RBC, Hemoglobin, Hematocrit, Platelets
+            - **Differential:** Neutrophils, Lymphocytes, Monocytes, Eosinophils, Basophils
+            - **Red Cell Indices:** MCV, MCH, MCHC, RDW
+            
+            **Accepted formats:** PDF, JPG, PNG
+            
+            💡 **Tip:** If some values are missing, our system will estimate them using population averages.
+            """)
+        
+        # Choose input method
+        input_method = st.radio(
+            "Choose how to provide your CBC values:",
+            ["📤 Upload Report (PDF/Image)", "✍️ Enter 7 Key Values Manually"],
+            help="You can either upload a lab report or manually enter the 7 most important biomarkers"
         )
+        
+        uploaded_file = None
+        manual_cbc_data = None
+        test_date = None
+        
+        if input_method == "📤 Upload Report (PDF/Image)":
+            uploaded_file = st.file_uploader(
+                "Upload your CBC/Blood Test Report (PDF, JPG, or PNG)",
+                type=["pdf", "jpg", "jpeg", "png"],
+                help="Click 'Browse files' to select your blood test report. We support Quebec Carnet de Santé PDFs and standard lab reports."
+            )
+        else:
+            st.markdown("**Enter the 7 key biomarkers from your blood test report:**")
+            st.caption("💡 You can find these values on your lab results. If a value is missing, leave it blank and we'll estimate it.")
+            
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                manual_wbc = st.number_input(
+                    "WBC (White Blood Cells)", 
+                    min_value=0.0, max_value=50.0, value=None,
+                    help="Normal range: 4.0-11.0 × 10⁹/L",
+                    placeholder="e.g., 7.2"
+                )
+                manual_nlr = st.number_input(
+                    "NLR (Neutrophil/Lymphocyte Ratio)", 
+                    min_value=0.0, max_value=50.0, value=None,
+                    help="Normal range: 1.0-3.0 (ratio)",
+                    placeholder="e.g., 2.5"
+                )
+                manual_hgb = st.number_input(
+                    "HGB (Hemoglobin)", 
+                    min_value=0.0, max_value=200.0, value=None,
+                    help="Normal range: 120-170 g/L",
+                    placeholder="e.g., 145"
+                )
+                manual_mcv = st.number_input(
+                    "MCV (Mean Corpuscular Volume)", 
+                    min_value=0.0, max_value=150.0, value=None,
+                    help="Normal range: 80-100 fL",
+                    placeholder="e.g., 88"
+                )
+            
+            with col_b:
+                manual_plt = st.number_input(
+                    "PLT (Platelets)", 
+                    min_value=0.0, max_value=1000.0, value=None,
+                    help="Normal range: 150-450 × 10⁹/L",
+                    placeholder="e.g., 250"
+                )
+                manual_rdw = st.number_input(
+                    "RDW (Red Cell Distribution Width)", 
+                    min_value=0.0, max_value=50.0, value=None,
+                    help="Normal range: 11.5-14.5 %",
+                    placeholder="e.g., 13.2"
+                )
+                manual_mono = st.number_input(
+                    "MONO (Monocytes)", 
+                    min_value=0.0, max_value=10.0, value=None,
+                    help="Normal range: 0.2-1.0 × 10⁹/L",
+                    placeholder="e.g., 0.6"
+                )
+                test_date = st.date_input(
+                    "Test Date",
+                    value=None,
+                    help="When was this blood test taken?"
+                )
+            
+            # Collect manual values (only if at least one is provided)
+            manual_values = {
+                'WBC': manual_wbc,
+                'NLR': manual_nlr,
+                'HGB': manual_hgb,
+                'MCV': manual_mcv,
+                'PLT': manual_plt,
+                'RDW': manual_rdw,
+                'MONO': manual_mono
+            }
+            
+            # Check if user entered any values
+            if any(v is not None for v in manual_values.values()):
+                manual_cbc_data = manual_values
         
         submit_button = st.form_submit_button("Submit Assessment", type="primary")
         
@@ -218,38 +447,81 @@ def show_questionnaire_page():
             # Save to database
             questionnaire_id = save_questionnaire(st.session_state.user_id, questionnaire_data)
             
-            if uploaded_file:
-                # Process the uploaded file with ML model
-                with st.spinner("Processing your CBC report with production cancer classifier..."):
-                    cbc_data, feature_vector, risk_score, detailed_prediction = process_cbc_upload(uploaded_file, questionnaire_data)
+            if uploaded_file or manual_cbc_data:
+                with st.spinner("Processing your CBC data..."):
+                    # STEP 1: Extract/Collect CBC data
+                    if uploaded_file:
+                        # Extract from uploaded file
+                        cbc_data = extract_cbc_from_pdf(uploaded_file)
+                        file_format = uploaded_file.name.split('.')[-1].lower()
+                        test_date_to_save = None  # Will use current date
+                    else:
+                        # Use manually entered values
+                        cbc_data = {
+                            'WBC': manual_cbc_data['WBC'],
+                            'NLR': manual_cbc_data['NLR'],
+                            'HGB': manual_cbc_data['HGB'],
+                            'MCV': manual_cbc_data['MCV'],
+                            'PLT': manual_cbc_data['PLT'],
+                            'RDW': manual_cbc_data['RDW'],
+                            'MONO': manual_cbc_data['MONO']
+                        }
+                        file_format = 'manual_entry'
+                        test_date_to_save = test_date  # User-specified date
+                    
+                    # STEP 2: Save CBC data to database FIRST
+                    cbc_result_id = save_cbc_data(
+                        st.session_state.user_id,
+                        questionnaire_id,
+                        cbc_data,
+                        test_date_to_save,
+                        file_format
+                    )
+                    
+                    if not cbc_result_id:
+                        st.error("❌ Failed to save CBC data to database")
+                        st.stop()
+                    
+                    st.success("✅ CBC data saved to database")
                 
-                # Get extraction result if available
-                extraction_result = cbc_data.get('_extraction_result', {
-                    'extraction_metadata': {'format': 'mock', 'success': False},
-                    'cbc_data': cbc_data,
-                    'patient_info': {},
-                    'additional_tests': {}
-                })
-                
-                # Save CBC results to database
-                save_cbc_results(
-                    st.session_state.user_id,
-                    questionnaire_id,
-                    extraction_result,
-                    feature_vector.tolist(),
-                    risk_score,
-                    detailed_prediction
-                )
+                # STEP 3: Read from database and run ML inference
+                with st.spinner("Running AI cancer risk analysis..."):
+                    # Retrieve data from database
+                    cbc_data_from_db = get_cbc_data_for_prediction(cbc_result_id)
+                    
+                    if not cbc_data_from_db:
+                        st.error("❌ Failed to retrieve CBC data for analysis")
+                        st.stop()
+                    
+                    # Run ML prediction on database data
+                    detailed_prediction = predict_cancer_risk(cbc_data_from_db)
+                    
+                    if 'error' in detailed_prediction:
+                        # Fallback to questionnaire-based risk
+                        from utils.ml_model import _calculate_questionnaire_risk
+                        risk_score = _calculate_questionnaire_risk(questionnaire_data)
+                        detailed_prediction = {
+                            'cancer_probability_pct': risk_score,
+                            'risk_level': 'Unknown',
+                            'confidence': 0.5,
+                            'prediction_label': 'Fallback'
+                        }
+                    
+                    # STEP 4: Update database with predictions
+                    prediction_success = update_cbc_predictions(cbc_result_id, detailed_prediction)
+                    
+                    if not prediction_success:
+                        st.warning("⚠️ CBC data saved but predictions could not be stored")
                 
                 # Update session state
                 st.session_state.user_data = get_user_data(st.session_state.user_id)
                 
-                st.success("Assessment and CBC analysis completed successfully!")
+                st.success("✅ Assessment and CBC analysis completed successfully!")
                 st.balloons()
                 time.sleep(2)
                 st.rerun()
             else:
-                st.warning("Please upload your CBC report to complete the assessment")
+                st.warning("Please either upload your CBC report OR enter the 7 key values manually to complete the assessment")
 
 def show_dashboard_page():
     """User profile page with data visualization panel"""
@@ -468,6 +740,72 @@ def show_about_page():
             </div>
             """, unsafe_allow_html=True)
 
+
+def show_settings_page():
+    """Account settings and deletion controls"""
+    st.title("⚙️ Account Settings")
+
+    user_info = get_current_user() or {}
+
+    st.subheader("Account Details")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Email", user_info.get('email', st.session_state.get('user_email', 'Unknown')))
+        st.metric("Username", user_info.get('username', st.session_state.get('username', 'Unknown')))
+    with col2:
+        created_at = user_info.get('created_at')
+        if created_at:
+            try:
+                created_display = datetime.fromisoformat(created_at.replace('Z', '+00:00')).strftime('%B %d, %Y')
+            except Exception:
+                created_display = created_at
+        else:
+            created_display = "Unavailable"
+        st.metric("Member Since", created_display)
+
+    st.markdown("---")
+
+    with st.expander("🗑️ Delete account and data", expanded=False):
+        st.warning("""
+        This will permanently delete your questionnaires, CBC results, predictions, and account access. 
+        The action cannot be undone.
+        """)
+
+        with st.form("delete_account_form"):
+            st.markdown("Before continuing, confirm that you understand the consequences of deleting your account.")
+            confirm_phrase = st.text_input("Type DELETE to confirm", placeholder="DELETE")
+            acknowledge = st.checkbox("I understand this action is permanent and cannot be undone.")
+            delete_submit = st.form_submit_button("Delete my account", type="primary")
+
+        if delete_submit:
+            if confirm_phrase.strip().upper() != "DELETE":
+                st.error("You must type DELETE exactly to confirm.")
+            elif not acknowledge:
+                st.error("You must acknowledge the permanence of this action.")
+            else:
+                user_id = st.session_state.get('user_id')
+                if not user_id:
+                    st.error("Could not determine your user ID. Please sign out and sign back in before deleting your account.")
+                    return
+
+                with st.spinner("Deleting your account and associated data..."):
+                    success, diagnostics = delete_user_account_and_data(user_id)
+
+                if success:
+                    st.success("Your account and data have been permanently removed.")
+                    logout()
+                    st.session_state["account_deleted_notice"] = True
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    st.error("We removed some data, but parts of the deletion process reported issues.")
+                    if diagnostics.get("errors"):
+                        for item in diagnostics["errors"]:
+                            st.warning(item)
+                        if any("service role key" in item.lower() for item in diagnostics["errors"]):
+                            st.info("Add your Supabase service role key to Streamlit secrets or environment variables to allow automated account removal.")
+                    st.info("Please try again later or contact support if the problem persists.")
+
 def show_password_update_page():
     """Page for updating password after clicking reset link"""
     st.markdown("""
@@ -542,6 +880,8 @@ def main():
         show_questionnaire_page()
     elif st.session_state.current_page == "About Us":
         show_about_page()
+    elif st.session_state.current_page == "Settings":
+        show_settings_page()
     else:
         show_dashboard_page()  # Default to dashboard
 

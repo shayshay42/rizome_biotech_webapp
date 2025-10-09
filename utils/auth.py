@@ -4,9 +4,10 @@ Handles user registration, login, and session management
 """
 
 import streamlit as st
-from .supabase_client import get_supabase
+from .supabase_client import get_supabase, get_supabase_admin
 from datetime import datetime
 import re
+from typing import Tuple, Dict, List
 
 def init_auth():
     """Initialize authentication system and session state"""
@@ -325,6 +326,61 @@ def get_current_user():
         return None
     except:
         return None
+
+
+def delete_user_account_and_data(user_id: str) -> Tuple[bool, Dict[str, List[str]]]:
+    """Delete all user-owned data and the Supabase Auth account if permissions allow.
+
+    Returns:
+        (success flag, diagnostics dict with keys 'deleted' and 'errors')
+    """
+
+    supabase = get_supabase()
+    diagnostics = {"deleted": [], "errors": []}
+
+    tables_to_clean = [
+        ("cbc_results", "user_id"),
+        ("questionnaires", "user_id"),
+        ("terms_acceptances", "user_id"),
+        ("user_profiles", "id")
+    ]
+
+    for table, column in tables_to_clean:
+        try:
+            supabase.table(table).delete().eq(column, user_id).execute()
+            diagnostics["deleted"].append(table)
+        except Exception as exc:
+            error_text = str(exc)
+            if "does not exist" in error_text.lower():
+                diagnostics["deleted"].append(f"{table} (not present)")
+            else:
+                diagnostics["errors"].append(f"{table}: {error_text}")
+
+    auth_deleted = False
+    admin_client = get_supabase_admin()
+
+    if admin_client is not None:
+        try:
+            admin_client.auth.admin.delete_user(user_id)
+            auth_deleted = True
+            diagnostics["deleted"].append("auth.users")
+        except Exception as exc:
+            diagnostics["errors"].append(f"auth.users: {exc}")
+    else:
+        diagnostics["errors"].append(
+            "Supabase service role key not configured. User auth record retained; contact administrator."
+        )
+
+    # As a fallback, mark the user metadata so the account can be removed manually later
+    if not auth_deleted:
+        try:
+            supabase.auth.update_user({
+                "data": {"account_status": "pending_manual_deletion"}
+            })
+        except Exception as exc:
+            diagnostics["errors"].append(f"metadata: {exc}")
+
+    return len(diagnostics["errors"]) == 0, diagnostics
 
 def get_user_data(user_id):
     """

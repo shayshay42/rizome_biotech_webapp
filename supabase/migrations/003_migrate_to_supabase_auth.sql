@@ -16,7 +16,6 @@ ALTER TABLE questionnaires
 ALTER TABLE cbc_results 
     ALTER COLUMN user_id TYPE UUID USING user_id::text::uuid;
 
--- Step 3: Add foreign key constraints to Supabase Auth
 -- Note: This creates a reference to auth.users (Supabase's internal table)
 ALTER TABLE questionnaires 
     ADD CONSTRAINT questionnaires_user_id_fkey 

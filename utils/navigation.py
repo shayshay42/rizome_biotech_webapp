@@ -12,7 +12,7 @@ def setup_navigation():
         st.markdown(f"### Welcome, {st.session_state.username}! 👋")
         
         # Navigation menu
-        options = ["Dashboard", "Questionnaire", "About Us"]
+        options = ["Dashboard", "Questionnaire", "About Us", "Settings"]
         try:
             current_index = options.index(st.session_state.current_page)
         except (ValueError, AttributeError):
@@ -21,7 +21,7 @@ def setup_navigation():
         selected = option_menu(
             menu_title="Navigation",
             options=options,
-            icons=["house", "clipboard-data", "people"],
+            icons=["house", "clipboard-data", "people", "gear"],
             menu_icon="cast",
             default_index=current_index,
             styles={

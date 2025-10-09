@@ -352,65 +352,173 @@ def authenticate_user(username: str, password: str) -> Optional[Dict]:
         print(f"Error authenticating user: {e}")
         return None
 
-def save_cbc_results(user_id: int, cbc_data: Dict, prediction_results: Dict, 
-                     questionnaire_id: int = None, file_format: str = "unknown") -> bool:
-    """Save CBC results and prediction to database"""
+def save_cbc_data(user_id: int, questionnaire_id: int, cbc_data: Dict, 
+                  test_date=None, file_format: str = "unknown") -> int:
+    """
+    Save raw CBC data to database (without predictions)
+    Returns: cbc_result_id for later prediction updates
+    """
     db = get_db_manager()
     
-    # Prepare missing biomarkers for storage
-    missing_biomarkers = prediction_results.get('missing_features', [])
-    if db.db_type == 'postgresql':
-        missing_biomarkers_str = missing_biomarkers  # PostgreSQL supports arrays
-    else:
-        missing_biomarkers_str = ','.join(missing_biomarkers) if missing_biomarkers else None
-    
     try:
+        # Use provided test_date or current date
+        if test_date is None:
+            test_date = datetime.now().date()
+        elif hasattr(test_date, 'date'):  # Handle datetime objects
+            test_date = test_date.date()
+        
         query = """
         INSERT INTO cbc_results (
             user_id, questionnaire_id, test_date, file_format, extraction_method,
             wbc, rbc, hgb, hct, mcv, mch, mchc, rdw, plt, mpv,
             neut_abs, lymph_abs, mono_abs, eos_abs, baso_abs,
             neut_pct, lymph_pct, mono_pct, eos_pct, baso_pct,
-            nlr, nrbc_abs, nrbc_pct,
-            cancer_probability, prediction_label, risk_level, confidence_score,
-            missing_biomarkers, imputed_count, imputation_warning
+            nlr, nrbc_abs, nrbc_pct
         ) VALUES (
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?, ?,
             ?, ?, ?
         )
         """
         
+        # Extract values handling both dict and plain values
+        def get_value(key):
+            val = cbc_data.get(key)
+            if isinstance(val, dict):
+                return val.get('value')
+            return val
+        
         params = (
-            user_id, questionnaire_id, datetime.now().date(), file_format, "universal_extractor",
-            cbc_data.get('WBC', {}).get('value'), cbc_data.get('RBC', {}).get('value'),
-            cbc_data.get('HGB', {}).get('value'), cbc_data.get('HCT', {}).get('value'),
-            cbc_data.get('MCV', {}).get('value'), cbc_data.get('MCH', {}).get('value'),
-            cbc_data.get('MCHC', {}).get('value'), cbc_data.get('RDW', {}).get('value'),
-            cbc_data.get('PLT', {}).get('value'), cbc_data.get('MPV', {}).get('value'),
-            cbc_data.get('NEUT_ABS', {}).get('value'), cbc_data.get('LYMPH_ABS', {}).get('value'),
-            cbc_data.get('MONO_ABS', {}).get('value'), cbc_data.get('EOS_ABS', {}).get('value'),
-            cbc_data.get('BASO_ABS', {}).get('value'), cbc_data.get('NEUT_PCT', {}).get('value'),
-            cbc_data.get('LYMPH_PCT', {}).get('value'), cbc_data.get('MONO_PCT', {}).get('value'),
-            cbc_data.get('EOS_PCT', {}).get('value'), cbc_data.get('BASO_PCT', {}).get('value'),
-            cbc_data.get('NLR', {}).get('value'), cbc_data.get('NRBC_ABS', {}).get('value'),
-            cbc_data.get('NRBC_PCT', {}).get('value'),
-            prediction_results.get('cancer_probability'), prediction_results.get('prediction_label'),
-            prediction_results.get('risk_level'), prediction_results.get('confidence'),
-            missing_biomarkers_str, prediction_results.get('imputed_count', 0),
-            prediction_results.get('imputation_warning')
+            user_id, questionnaire_id, test_date, file_format, "universal_extractor",
+            get_value('WBC'), get_value('RBC'),
+            get_value('HGB'), get_value('HCT'),
+            get_value('MCV'), get_value('MCH'),
+            get_value('MCHC'), get_value('RDW'),
+            get_value('PLT'), get_value('MPV'),
+            get_value('NEUT_ABS'), get_value('LYMPH_ABS'),
+            get_value('MONO_ABS'), get_value('EOS_ABS'),
+            get_value('BASO_ABS'), get_value('NEUT_PCT'),
+            get_value('LYMPH_PCT'), get_value('MONO_PCT'),
+            get_value('EOS_PCT'), get_value('BASO_PCT'),
+            get_value('NLR'), get_value('NRBC_ABS'),
+            get_value('NRBC_PCT')
+        )
+        
+        db.execute_query(query, params)
+        
+        # Get the ID of the inserted row
+        result = db.execute_query(
+            "SELECT last_insert_rowid() as id" if db.db_type == 'sqlite' else "SELECT lastval() as id",
+            fetch='one'
+        )
+        
+        return result[0] if result else None
+        
+    except Exception as e:
+        print(f"Error saving CBC data: {e}")
+        return None
+
+def update_cbc_predictions(cbc_result_id: int, prediction_results: Dict) -> bool:
+    """
+    Update CBC record with ML predictions
+    Args:
+        cbc_result_id: ID of the cbc_results record
+        prediction_results: Dict with cancer_probability, risk_level, etc.
+    """
+    db = get_db_manager()
+    
+    # Prepare missing biomarkers for storage
+    missing_biomarkers = prediction_results.get('missing_features', [])
+    if db.db_type == 'postgresql':
+        missing_biomarkers_str = missing_biomarkers
+    else:
+        missing_biomarkers_str = ','.join(missing_biomarkers) if missing_biomarkers else None
+    
+    try:
+        query = """
+        UPDATE cbc_results 
+        SET cancer_probability = ?,
+            prediction_label = ?,
+            risk_level = ?,
+            confidence_score = ?,
+            missing_biomarkers = ?,
+            imputed_count = ?,
+            imputation_warning = ?
+        WHERE id = ?
+        """
+        
+        params = (
+            prediction_results.get('cancer_probability'),
+            prediction_results.get('prediction_label'),
+            prediction_results.get('risk_level'),
+            prediction_results.get('confidence'),
+            missing_biomarkers_str,
+            prediction_results.get('imputed_count', 0),
+            prediction_results.get('imputation_warning'),
+            cbc_result_id
         )
         
         db.execute_query(query, params)
         return True
         
     except Exception as e:
-        print(f"Error saving CBC results: {e}")
+        print(f"Error updating CBC predictions: {e}")
         return False
+
+def get_cbc_data_for_prediction(cbc_result_id: int) -> Dict:
+    """
+    Retrieve CBC data from database for ML prediction
+    Returns: Dictionary with CBC values ready for cancer classifier
+    """
+    db = get_db_manager()
+    
+    try:
+        query = """
+        SELECT wbc, nlr, hgb, mcv, plt, rdw, mono_abs as mono,
+               rbc, hct, mch, mchc, mpv,
+               neut_abs, lymph_abs, eos_abs, baso_abs,
+               neut_pct, lymph_pct, mono_pct, eos_pct, baso_pct
+        FROM cbc_results
+        WHERE id = ?
+        """
+        
+        result = db.execute_query(query, (cbc_result_id,), fetch='one')
+        
+        if not result:
+            return None
+        
+        # Map to dictionary (handling both dict and tuple results)
+        if isinstance(result, dict):
+            return result
+        else:
+            # SQLite returns tuple, map to column names
+            columns = ['WBC', 'NLR', 'HGB', 'MCV', 'PLT', 'RDW', 'MONO',
+                      'RBC', 'HCT', 'MCH', 'MCHC', 'MPV',
+                      'NEUT_ABS', 'LYMPH_ABS', 'EOS_ABS', 'BASO_ABS',
+                      'NEUT_PCT', 'LYMPH_PCT', 'MONO_PCT', 'EOS_PCT', 'BASO_PCT']
+            return dict(zip(columns, result))
+        
+    except Exception as e:
+        print(f"Error retrieving CBC data: {e}")
+        return None
+
+# Legacy function for backward compatibility
+def save_cbc_results(user_id: int, cbc_data: Dict, prediction_results: Dict, 
+                     questionnaire_id: int = None, file_format: str = "unknown") -> bool:
+    """
+    DEPRECATED: Use save_cbc_data() + update_cbc_predictions() instead
+    Save CBC results and prediction to database (legacy combined function)
+    """
+    # Save CBC data first
+    cbc_result_id = save_cbc_data(user_id, questionnaire_id, cbc_data, None, file_format)
+    
+    if cbc_result_id:
+        # Update with predictions
+        return update_cbc_predictions(cbc_result_id, prediction_results)
+    
+    return False
 
 def get_user_cbc_history(user_id: int) -> List[Dict]:
     """Get CBC test history for a user"""
