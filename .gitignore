@@ -18,6 +18,7 @@ output/
 *.pdf
 *.tex
 *.html
+.specstory/
 
 # Documentation (only keep README)
 *.md
