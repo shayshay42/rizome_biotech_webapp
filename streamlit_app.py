@@ -292,11 +292,11 @@ def show_questionnaire_page():
                                     ["Fatigue", "Weakness", "Bruising", "Bleeding", 
                                      "Frequent Infections", "Weight Loss", "None"])
         
-    st.subheader("📋 CBC Report Upload")
-        
-    # Instructions for obtaining CBC report
-    with st.expander("ℹ️ How to Obtain Your Blood Test Report", expanded=False):
-        st.markdown("""
+        st.subheader("📋 CBC Report Upload")
+
+        # Instructions for obtaining CBC report
+        with st.expander("ℹ️ How to Obtain Your Blood Test Report", expanded=False):
+            st.markdown("""
             ### 🇨🇦 For Quebec Residents (Carnet de Santé)
             
             **Option 1: Download from Quebec Health Portal**
@@ -348,7 +348,7 @@ def show_questionnaire_page():
         uploaded_file = None
         manual_inputs = None
         manual_test_date = None
-        
+
         if input_method == "📤 Upload Report (PDF/Image)":
             uploaded_file = st.file_uploader(
                 "Upload your CBC/Blood Test Report (PDF, JPG, or PNG)",
@@ -358,7 +358,7 @@ def show_questionnaire_page():
         else:
             st.markdown("**Enter the 7 key biomarkers from your blood test report:**")
             st.caption("💡 You can find these values on your lab results. If a value is missing, leave it blank and we'll estimate it.")
-            
+
             col_a, col_b = st.columns(2)
             manual_inputs = {}
 
@@ -403,7 +403,7 @@ def show_questionnaire_page():
                     manual_test_date = None
         
         submit_button = st.form_submit_button("Submit Assessment", type="primary")
-        
+
         if submit_button:
             # Store questionnaire data
             questionnaire_data = {
