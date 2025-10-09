@@ -4,13 +4,16 @@ Supports both local SQLite (development) and Supabase PostgreSQL (production)
 """
 
 import os
+import json
 import sqlite3
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import streamlit as st
 from typing import Dict, List, Optional, Any
 import hashlib
-from datetime import datetime
+from datetime import datetime, date
+
+from .supabase_client import get_supabase, get_supabase_admin
 
 class DatabaseManager:
     """Unified database manager supporting SQLite and PostgreSQL"""
@@ -18,6 +21,7 @@ class DatabaseManager:
     def __init__(self):
         self.db_type = self._detect_database_type()
         self.connection = None
+        self._table_columns_cache: Dict[str, List[str]] = {}
         
     def _detect_database_type(self) -> str:
         """Detect whether to use SQLite or PostgreSQL based on environment"""
@@ -290,6 +294,51 @@ class DatabaseManager:
             except Exception as e:
                 print(f"❌ Error creating table: {e}")
 
+    def get_table_columns(self, table_name: str) -> List[str]:
+        """Return list of column names for a table, caching results per session."""
+        if table_name in self._table_columns_cache:
+            return self._table_columns_cache[table_name]
+
+        conn = self.get_connection()
+        columns: List[str] = []
+        try:
+            cursor = conn.cursor()
+            if self.db_type == 'postgresql':
+                cursor.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (table_name,)
+                )
+                rows = cursor.fetchall()
+                for row in rows:
+                    if isinstance(row, dict):
+                        columns.append(row.get('column_name'))
+                    else:
+                        columns.append(row[0])
+            else:
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                rows = cursor.fetchall()
+                for row in rows:
+                    if isinstance(row, dict):
+                        col_name = row.get('name')
+                    else:
+                        col_name = row[1] if len(row) > 1 else None
+                    if col_name:
+                        columns.append(col_name)
+        finally:
+            conn.close()
+
+        self._table_columns_cache[table_name] = columns
+        return columns
+
+    def has_column(self, table_name: str, column_name: str) -> bool:
+        """Check if a specific column exists on a table."""
+        return column_name in self.get_table_columns(table_name)
+
 # Global database manager instance
 _db_manager = None
 
@@ -352,13 +401,15 @@ def authenticate_user(username: str, password: str) -> Optional[Dict]:
         print(f"Error authenticating user: {e}")
         return None
 
-def save_cbc_data(user_id: int, questionnaire_id: int, cbc_data: Dict, 
-                  test_date=None, file_format: str = "unknown") -> int:
+def save_cbc_data(user_id: Any, questionnaire_id: Any, cbc_data: Dict,
+                  test_date=None, file_format: str = "unknown",
+                  metadata: Optional[Dict[str, Any]] = None) -> int:
     """
     Save raw CBC data to database (without predictions)
     Returns: cbc_result_id for later prediction updates
     """
     db = get_db_manager()
+    metadata = metadata or {}
     
     try:
         # Use provided test_date or current date
@@ -367,36 +418,95 @@ def save_cbc_data(user_id: int, questionnaire_id: int, cbc_data: Dict,
         elif hasattr(test_date, 'date'):  # Handle datetime objects
             test_date = test_date.date()
 
-        # Extract values handling both dict and plain values
-        def get_value(key):
-            val = cbc_data.get(key)
-            if isinstance(val, dict):
-                return val.get('value')
-            return val
+        # Extract values handling both dict and plain values with fallback keys
+        def get_value(primary_key, *fallback_keys):
+            for key in (primary_key,) + fallback_keys:
+                val = cbc_data.get(key)
+                if isinstance(val, dict):
+                    value = val.get('value')
+                    if value is not None:
+                        return value
+                elif val is not None:
+                    return val
+            return None
 
-        columns = [
-            'user_id', 'questionnaire_id', 'test_date', 'file_format', 'extraction_method',
-            'wbc', 'rbc', 'hgb', 'hct', 'mcv', 'mch', 'mchc', 'rdw', 'plt', 'mpv',
-            'neut_abs', 'lymph_abs', 'mono_abs', 'eos_abs', 'baso_abs',
-            'neut_pct', 'lymph_pct', 'mono_pct', 'eos_pct', 'baso_pct',
-            'nlr', 'nrbc_abs', 'nrbc_pct'
+        table_name = 'cbc_results'
+
+        def column_exists(column: str) -> bool:
+            if db.db_type != 'postgresql':
+                return True
+            return db.has_column(table_name, column)
+
+        column_values: List[tuple] = []
+
+        def add_column(column: str, value: Any):
+            column_values.append((column, value))
+
+        def add_column_if_exists(column: str, value: Any):
+            if column_exists(column):
+                column_values.append((column, value))
+
+        # Core identifiers
+        add_column('user_id', user_id)
+        add_column('questionnaire_id', questionnaire_id)
+
+        # Determine appropriate test date column for the current schema
+        date_column = None
+        if db.db_type == 'postgresql':
+            for candidate in ('test_date', 'collection_date', 'cbc_test_date', 'sample_date', 'collected_at'):
+                if column_exists(candidate):
+                    date_column = candidate
+                    break
+        else:
+            date_column = 'test_date'
+
+        if date_column:
+            add_column(date_column, test_date)
+
+        add_column_if_exists('file_format', file_format)
+        add_column_if_exists('extraction_method', "universal_extractor")
+
+        # Include optional metadata columns if they exist in the target schema
+        for meta_key, meta_value in metadata.items():
+            if isinstance(meta_value, (dict, list)):
+                meta_value = json.dumps(meta_value)
+            if meta_key not in [col for col, _ in column_values]:
+                add_column_if_exists(meta_key, meta_value)
+
+        biomarker_mappings = [
+            ('wbc', 'WBC'),
+            ('rbc', 'RBC'),
+            ('hgb', 'HGB', 'Hemoglobin'),
+            ('hct', 'HCT', 'Hematocrit'),
+            ('mcv', 'MCV'),
+            ('mch', 'MCH'),
+            ('mchc', 'MCHC'),
+            ('rdw', 'RDW'),
+            ('plt', 'PLT', 'Platelets'),
+            ('mpv', 'MPV'),
+            ('neut_abs', 'NEUT_ABS', 'Neutrophils'),
+            ('lymph_abs', 'LYMPH_ABS', 'Lymphocytes'),
+            ('mono_abs', 'MONO_ABS', 'MONO', 'Monocytes'),
+            ('eos_abs', 'EOS_ABS', 'Eosinophils'),
+            ('baso_abs', 'BASO_ABS', 'Basophils'),
+            ('neut_pct', 'NEUT_PCT', 'Neutrophils'),
+            ('lymph_pct', 'LYMPH_PCT', 'Lymphocytes'),
+            ('mono_pct', 'MONO_PCT', 'Monocytes'),
+            ('eos_pct', 'EOS_PCT', 'Eosinophils'),
+            ('baso_pct', 'BASO_PCT', 'Basophils'),
+            ('nlr', 'NLR'),
+            ('nrbc_abs', 'NRBC_ABS'),
+            ('nrbc_pct', 'NRBC_PCT')
         ]
 
-        params = (
-            user_id, questionnaire_id, test_date, file_format, "universal_extractor",
-            get_value('WBC'), get_value('RBC'),
-            get_value('HGB'), get_value('HCT'),
-            get_value('MCV'), get_value('MCH'),
-            get_value('MCHC'), get_value('RDW'),
-            get_value('PLT'), get_value('MPV'),
-            get_value('NEUT_ABS'), get_value('LYMPH_ABS'),
-            get_value('MONO_ABS'), get_value('EOS_ABS'),
-            get_value('BASO_ABS'), get_value('NEUT_PCT'),
-            get_value('LYMPH_PCT'), get_value('MONO_PCT'),
-            get_value('EOS_PCT'), get_value('BASO_PCT'),
-            get_value('NLR'), get_value('NRBC_ABS'),
-            get_value('NRBC_PCT')
-        )
+        for column, primary, *fallbacks in biomarker_mappings:
+            add_column_if_exists(column, get_value(primary, *fallbacks))
+
+        columns = [col for col, _ in column_values]
+        values = tuple(val for _, val in column_values)
+
+        if not columns:
+            raise ValueError("No columns available to insert into cbc_results")
 
         placeholder = "%s" if db.db_type == 'postgresql' else "?"
         placeholders = ', '.join([placeholder] * len(columns))
@@ -406,13 +516,53 @@ def save_cbc_data(user_id: int, questionnaire_id: int, cbc_data: Dict,
         """
 
         if db.db_type == 'postgresql':
+            # Attempt to insert via Supabase REST interface first to handle UUID casting and RLS
+            supabase_clients: List[Any] = []
+
+            try:
+                client = get_supabase()
+                if client:
+                    supabase_clients.append(client)
+            except Exception:
+                pass
+
+            try:
+                admin_client = get_supabase_admin()
+                if admin_client and admin_client not in supabase_clients:
+                    supabase_clients.append(admin_client)
+            except Exception:
+                pass
+
+            record = {}
+
+            def serialize_value(val: Any):
+                if isinstance(val, datetime):
+                    return val.isoformat()
+                if isinstance(val, date):
+                    return val.isoformat()
+                return val
+
+            for column, value in column_values:
+                record[column] = serialize_value(value)
+
+            for client in supabase_clients:
+                try:
+                    response = client.table(table_name).insert(record).execute()
+                    data = getattr(response, 'data', None)
+                    if data:
+                        inserted = data[0]
+                        return inserted.get('id') or inserted.get('ID')
+                except Exception as supabase_error:
+                    print(f"Supabase insert via {client.__class__.__name__} failed: {supabase_error}")
+
+            # Fallback to direct PostgreSQL insert if Supabase clients are unavailable
             query = base_query + " RETURNING id"
-            result = db.execute_query(query, params, fetch='one')
+            result = db.execute_query(query, values, fetch='one')
             if isinstance(result, dict):
                 return result.get('id')
             return result[0] if result else None
         else:
-            db.execute_query(base_query, params)
+            db.execute_query(base_query, values)
             result = db.execute_query("SELECT last_insert_rowid() as id", fetch='one')
             if isinstance(result, dict):
                 return result.get('id')
@@ -513,8 +663,14 @@ def save_cbc_results(user_id: int, cbc_data: Dict, prediction_results: Dict,
     DEPRECATED: Use save_cbc_data() + update_cbc_predictions() instead
     Save CBC results and prediction to database (legacy combined function)
     """
+    metadata = {
+        'filename': 'legacy-save',
+        'extraction_source': 'legacy_api',
+        'extraction_success': True,
+        'raw_extraction_data': cbc_data
+    }
     # Save CBC data first
-    cbc_result_id = save_cbc_data(user_id, questionnaire_id, cbc_data, None, file_format)
+    cbc_result_id = save_cbc_data(user_id, questionnaire_id, cbc_data, None, file_format, metadata)
     
     if cbc_result_id:
         # Update with predictions

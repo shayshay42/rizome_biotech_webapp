@@ -451,6 +451,12 @@ def show_questionnaire_page():
                         cbc_data = extract_cbc_from_pdf(uploaded_file)
                         file_format = uploaded_file.name.split('.')[-1].lower()
                         test_date_to_save = None  # Will use current date
+                        metadata = {
+                            'filename': uploaded_file.name,
+                            'extraction_source': 'pdf_upload',
+                            'extraction_success': bool(cbc_data),
+                            'raw_extraction_data': cbc_data
+                        }
                     else:
                         # Use manually entered values
                         cbc_data = {
@@ -464,6 +470,12 @@ def show_questionnaire_page():
                         }
                         file_format = 'manual_entry'
                         test_date_to_save = manual_test_date  # User-specified date
+                        metadata = {
+                            'filename': 'manual-entry',
+                            'extraction_source': 'manual_input',
+                            'extraction_success': True,
+                            'raw_extraction_data': cbc_data
+                        }
                     
                     # STEP 2: Save CBC data to database FIRST
                     cbc_result_id = save_cbc_data(
@@ -471,7 +483,8 @@ def show_questionnaire_page():
                         questionnaire_id,
                         cbc_data,
                         test_date_to_save,
-                        file_format
+                        file_format,
+                        metadata
                     )
                     
                     if not cbc_result_id:
