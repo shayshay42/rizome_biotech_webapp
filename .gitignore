@@ -6,6 +6,27 @@ models/
 data/*.db
 data/*.backup.db
 
+# Large local resources (keep out of git)
+assets/
+output/
+*.zip
+*.tar
+*.tar.gz
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.tex
+*.html
+
+# Documentation (only keep README)
+*.md
+!README.md
+
+# Test suites (keep local)
+test_*.py
+tests/
+
 # Python
 __pycache__/
 *.py[cod]
