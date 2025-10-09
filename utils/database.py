@@ -5,6 +5,7 @@ Supports both local SQLite (development) and Supabase PostgreSQL (production)
 
 import os
 import json
+import textwrap
 import sqlite3
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -403,12 +404,14 @@ def authenticate_user(username: str, password: str) -> Optional[Dict]:
 
 def save_cbc_data(user_id: Any, questionnaire_id: Any, cbc_data: Dict,
                   test_date=None, file_format: str = "unknown",
-                  metadata: Optional[Dict[str, Any]] = None) -> int:
+                  metadata: Optional[Dict[str, Any]] = None, *args, **kwargs) -> int:
     """
     Save raw CBC data to database (without predictions)
     Returns: cbc_result_id for later prediction updates
     """
     db = get_db_manager()
+    if metadata is None and 'metadata' in kwargs:
+        metadata = kwargs['metadata']
     metadata = metadata or {}
     
     try:
@@ -627,15 +630,16 @@ def get_cbc_data_for_prediction(cbc_result_id: int) -> Dict:
     db = get_db_manager()
     
     try:
-        query = """
-        SELECT wbc, nlr, hgb, mcv, plt, rdw, mono_abs as mono,
-               rbc, hct, mch, mchc, mpv,
-               neut_abs, lymph_abs, eos_abs, baso_abs,
-               neut_pct, lymph_pct, mono_pct, eos_pct, baso_pct
-        FROM cbc_results
-        WHERE id = ?
-        """
-        
+        placeholder = "%s" if db.db_type == 'postgresql' else "?"
+        query = textwrap.dedent(f"""
+            SELECT wbc, nlr, hgb, mcv, plt, rdw, mono_abs as mono,
+                   rbc, hct, mch, mchc, mpv,
+                   neut_abs, lymph_abs, eos_abs, baso_abs,
+                   neut_pct, lymph_pct, mono_pct, eos_pct, baso_pct
+            FROM cbc_results
+            WHERE id = {placeholder}
+        """)
+
         result = db.execute_query(query, (cbc_result_id,), fetch='one')
         
         if not result:
@@ -670,7 +674,14 @@ def save_cbc_results(user_id: int, cbc_data: Dict, prediction_results: Dict,
         'raw_extraction_data': cbc_data
     }
     # Save CBC data first
-    cbc_result_id = save_cbc_data(user_id, questionnaire_id, cbc_data, None, file_format, metadata)
+    cbc_result_id = save_cbc_data(
+        user_id,
+        questionnaire_id,
+        cbc_data,
+        None,
+        file_format,
+        metadata=metadata
+    )
     
     if cbc_result_id:
         # Update with predictions

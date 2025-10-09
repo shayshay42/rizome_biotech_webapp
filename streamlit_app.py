@@ -484,7 +484,7 @@ def show_questionnaire_page():
                         cbc_data,
                         test_date_to_save,
                         file_format,
-                        metadata
+                        metadata=metadata
                     )
                     
                     if not cbc_result_id:
