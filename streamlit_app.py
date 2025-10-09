@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 import time
+from typing import Any, Optional
 
 # Add project root to path for imports
 project_root = Path(__file__).parent
@@ -551,15 +552,44 @@ def show_dashboard_page():
     
     # Get CBC results
     cbc_results = user_data.get('cbc_results')
-    risk_score = cbc_results.get('risk_score', 50)
+
+    def _coerce_score(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        if 0 <= num <= 1:
+            num *= 100
+        return num
+
+    risk_score = _coerce_score(cbc_results.get('risk_score'))
     
     # Try to get detailed prediction results
     try:
         detailed_prediction = json.loads(cbc_results.get('risk_interpretation', '{}'))
-        has_detailed_prediction = 'cancer_probability_pct' in detailed_prediction
-    except:
+        has_detailed_prediction = bool(detailed_prediction)
+    except Exception:
         detailed_prediction = {}
         has_detailed_prediction = False
+
+    if risk_score is None:
+        candidates = [
+            detailed_prediction.get('cancer_probability_pct'),
+            detailed_prediction.get('cancer_probability'),
+            cbc_results.get('cancer_probability')
+        ]
+        for candidate in candidates:
+            coerced = _coerce_score(candidate)
+            if coerced is not None:
+                risk_score = coerced
+                break
+
+    if risk_score is None:
+        risk_score = 0.0
+
+    risk_score = max(0.0, min(100.0, risk_score))
     
     # Get standardized biomarkers from database
     biomarkers = {

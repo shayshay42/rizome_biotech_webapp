@@ -583,41 +583,92 @@ def update_cbc_predictions(cbc_result_id: int, prediction_results: Dict) -> bool
         prediction_results: Dict with cancer_probability, risk_level, etc.
     """
     db = get_db_manager()
-    
-    # Prepare missing biomarkers for storage
+
+    table_name = 'cbc_results'
+
+    def column_exists(column: str) -> bool:
+        if db.db_type != 'postgresql':
+            return True
+        return db.has_column(table_name, column)
+
+    column_values: List[tuple] = []
+
+    def add_column_if_exists(column: str, value: Any):
+        if column_exists(column):
+            column_values.append((column, value))
+
     missing_biomarkers = prediction_results.get('missing_features', [])
-    if db.db_type == 'postgresql':
-        missing_biomarkers_str = missing_biomarkers
-    else:
-        missing_biomarkers_str = ','.join(missing_biomarkers) if missing_biomarkers else None
-    
+    missing_value = missing_biomarkers if db.db_type == 'postgresql' else (
+        ','.join(missing_biomarkers) if missing_biomarkers else None
+    )
+
+    interpretation = prediction_results.get('interpretation')
+    if interpretation and not isinstance(interpretation, str):
+        interpretation = json.dumps(interpretation)
+
+    add_column_if_exists('prediction', prediction_results.get('prediction'))
+    add_column_if_exists('prediction_label', prediction_results.get('prediction_label'))
+    add_column_if_exists('cancer_probability', prediction_results.get('cancer_probability'))
+    add_column_if_exists('cancer_probability_pct', prediction_results.get('cancer_probability_pct'))
+    add_column_if_exists('healthy_probability', prediction_results.get('healthy_probability'))
+    add_column_if_exists('risk_score', prediction_results.get('cancer_probability_pct'))
+    add_column_if_exists('risk_level', prediction_results.get('risk_level'))
+    add_column_if_exists('risk_color', prediction_results.get('risk_color'))
+    add_column_if_exists('confidence_score', prediction_results.get('confidence'))
+    add_column_if_exists('confidence_pct', prediction_results.get('confidence_pct'))
+    add_column_if_exists('model_used', prediction_results.get('model_used'))
+    add_column_if_exists('missing_biomarkers', missing_value)
+    add_column_if_exists('imputed_count', prediction_results.get('imputed_count', 0))
+    add_column_if_exists('imputation_warning', prediction_results.get('imputation_warning'))
+    add_column_if_exists('risk_interpretation', interpretation)
+
+    model_features = prediction_results.get('model_features')
+    if model_features is not None:
+        add_column_if_exists('cbc_vector', json.dumps(model_features))
+
+    if not column_values:
+        print("No matching prediction columns to update in cbc_results")
+        return False
+
     try:
-        query = """
-        UPDATE cbc_results 
-        SET cancer_probability = ?,
-            prediction_label = ?,
-            risk_level = ?,
-            confidence_score = ?,
-            missing_biomarkers = ?,
-            imputed_count = ?,
-            imputation_warning = ?
-        WHERE id = ?
-        """
-        
-        params = (
-            prediction_results.get('cancer_probability'),
-            prediction_results.get('prediction_label'),
-            prediction_results.get('risk_level'),
-            prediction_results.get('confidence'),
-            missing_biomarkers_str,
-            prediction_results.get('imputed_count', 0),
-            prediction_results.get('imputation_warning'),
-            cbc_result_id
-        )
-        
+        # Attempt Supabase update for PostgreSQL environments to respect RLS rules
+        if db.db_type == 'postgresql':
+            record = {column: value for column, value in column_values}
+
+            supabase_clients: List[Any] = []
+            try:
+                client = get_supabase()
+                if client:
+                    supabase_clients.append(client)
+            except Exception:
+                pass
+
+            try:
+                admin_client = get_supabase_admin()
+                if admin_client and admin_client not in supabase_clients:
+                    supabase_clients.append(admin_client)
+            except Exception:
+                pass
+
+            for client in supabase_clients:
+                try:
+                    response = client.table(table_name).update(record).eq('id', cbc_result_id).execute()
+                    if getattr(response, 'data', None):
+                        return True
+                except Exception as supabase_error:
+                    print(f"Supabase update via {client.__class__.__name__} failed: {supabase_error}")
+
+        if db.db_type == 'postgresql':
+            set_clause = ', '.join([f"{column} = %s" for column, _ in column_values])
+            query = f"UPDATE {table_name} SET {set_clause} WHERE id = %s"
+        else:
+            set_clause = ', '.join([f"{column} = ?" for column, _ in column_values])
+            query = f"UPDATE {table_name} SET {set_clause} WHERE id = ?"
+        params = tuple(value for _, value in column_values) + (cbc_result_id,)
+
         db.execute_query(query, params)
         return True
-        
+
     except Exception as e:
         print(f"Error updating CBC predictions: {e}")
         return False
@@ -641,20 +692,57 @@ def get_cbc_data_for_prediction(cbc_result_id: int) -> Dict:
         """)
 
         result = db.execute_query(query, (cbc_result_id,), fetch='one')
-        
+
         if not result:
             return None
-        
-        # Map to dictionary (handling both dict and tuple results)
+
+        column_aliases = {
+            'wbc': 'WBC',
+            'nlr': 'NLR',
+            'hgb': 'HGB',
+            'mcv': 'MCV',
+            'plt': 'PLT',
+            'rdw': 'RDW',
+            'mono': 'MONO',
+            'rbc': 'RBC',
+            'hct': 'HCT',
+            'mch': 'MCH',
+            'mchc': 'MCHC',
+            'mpv': 'MPV',
+            'neut_abs': 'NEUT_ABS',
+            'lymph_abs': 'LYMPH_ABS',
+            'eos_abs': 'EOS_ABS',
+            'baso_abs': 'BASO_ABS',
+            'neut_pct': 'NEUT_PCT',
+            'lymph_pct': 'LYMPH_PCT',
+            'mono_pct': 'MONO_PCT',
+            'eos_pct': 'EOS_PCT',
+            'baso_pct': 'BASO_PCT'
+        }
+
+        def coerce(value):
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return value
+
         if isinstance(result, dict):
-            return result
+            normalized = {}
+            for key, value in result.items():
+                alias = column_aliases.get(key.lower(), key.upper())
+                normalized[alias] = coerce(value)
+            return normalized
         else:
             # SQLite returns tuple, map to column names
-            columns = ['WBC', 'NLR', 'HGB', 'MCV', 'PLT', 'RDW', 'MONO',
-                      'RBC', 'HCT', 'MCH', 'MCHC', 'MPV',
-                      'NEUT_ABS', 'LYMPH_ABS', 'EOS_ABS', 'BASO_ABS',
-                      'NEUT_PCT', 'LYMPH_PCT', 'MONO_PCT', 'EOS_PCT', 'BASO_PCT']
-            return dict(zip(columns, result))
+            columns = [
+                'WBC', 'NLR', 'HGB', 'MCV', 'PLT', 'RDW', 'MONO',
+                'RBC', 'HCT', 'MCH', 'MCHC', 'MPV',
+                'NEUT_ABS', 'LYMPH_ABS', 'EOS_ABS', 'BASO_ABS',
+                'NEUT_PCT', 'LYMPH_PCT', 'MONO_PCT', 'EOS_PCT', 'BASO_PCT'
+            ]
+            return {col: coerce(val) for col, val in zip(columns, result)}
         
     except Exception as e:
         print(f"Error retrieving CBC data: {e}")

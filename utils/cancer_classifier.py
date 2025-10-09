@@ -69,8 +69,22 @@ class CancerClassifier:
             print(f"📦 Loading AutoGluon model from: {model_path}")
             self.model = TabularPredictor.load(str(model_path))
             self.model_loaded = True
-            print(f"✅ AutoGluon model loaded successfully!")
-            print(f"   Best model: {self.model.get_model_best()}")
+            print("✅ AutoGluon model loaded successfully!")
+            best_model_name = None
+            if hasattr(self.model, "get_model_best") and callable(getattr(self.model, "get_model_best")):
+                try:
+                    best_model_name = self.model.get_model_best()
+                except Exception:
+                    best_model_name = None
+            if best_model_name is None:
+                try:
+                    leaderboard_df = self.model.leaderboard(silent=True)
+                    if hasattr(leaderboard_df, 'iloc') and not leaderboard_df.empty:
+                        best_model_name = leaderboard_df.iloc[0]['model']
+                except Exception:
+                    best_model_name = None
+            if best_model_name:
+                print(f"   Best model: {best_model_name}")
             return True
 
         except Exception as e:
