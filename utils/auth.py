@@ -109,7 +109,7 @@ def authenticate_user(email, password):
         password: User's password
 
     Returns:
-        tuple: (success: bool, user_id: str, email: str)
+        tuple: (success: bool, user_id: str, email: str, error_message: str)
     """
 
     try:
@@ -119,8 +119,7 @@ def authenticate_user(email, password):
         # We'll need to look it up in user metadata
         if not validate_email(email):
             # For now, require email login
-            # TODO: Add username lookup if needed
-            return False, None, None
+            return False, None, None, "Please enter a valid email address"
 
         # Sign in with Supabase Auth
         response = supabase.auth.sign_in_with_password({
@@ -142,16 +141,96 @@ def authenticate_user(email, password):
             username = user_metadata.get('username', user_email.split('@')[0])
             st.session_state.username = username
 
-            return True, user_id, user_email
+            return True, user_id, user_email, "Login successful"
         else:
-            return False, None, None
+            return False, None, None, "Invalid email or password"
 
     except Exception as e:
-        error_msg = str(e)
+        error_msg = str(e).lower()
 
-        # Handle common errors silently for security
-        # Don't reveal whether email exists or not
-        return False, None, None
+        # Provide user-friendly error messages
+        if "invalid login credentials" in error_msg or "invalid" in error_msg:
+            return False, None, None, "Invalid email or password. Please check your credentials."
+        elif "email not confirmed" in error_msg:
+            return False, None, None, "Please verify your email before signing in. Check your inbox for the verification link."
+        elif "too many requests" in error_msg or "rate limit" in error_msg:
+            return False, None, None, "Too many login attempts. Please wait a few minutes and try again."
+        elif "network" in error_msg or "connection" in error_msg:
+            return False, None, None, "Network error. Please check your internet connection and try again."
+        else:
+            # Generic error for unknown issues
+            return False, None, None, f"Sign in failed. Please try again or contact support."
+
+def request_password_reset(email):
+    """
+    Send password reset email to user
+
+    Args:
+        email: User's email address
+
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+
+    if not validate_email(email):
+        return False, "Please enter a valid email address"
+
+    try:
+        supabase = get_supabase()
+
+        # Send password reset email
+        supabase.auth.reset_password_for_email(
+            email,
+            options={
+                # Redirect URL after password reset
+                "redirect_to": "https://your-app-url.streamlit.app/"  # Update with your actual URL
+            }
+        )
+
+        return True, "Password reset email sent! Please check your inbox and spam folder."
+
+    except Exception as e:
+        error_msg = str(e).lower()
+
+        if "rate limit" in error_msg or "too many" in error_msg:
+            return False, "Too many reset requests. Please wait a few minutes and try again."
+        elif "network" in error_msg or "connection" in error_msg:
+            return False, "Network error. Please check your internet connection."
+        else:
+            # Don't reveal if email exists or not for security
+            return True, "If an account exists with this email, you will receive a password reset link shortly."
+
+def update_password(new_password):
+    """
+    Update user's password (called after password reset link)
+
+    Args:
+        new_password: New password to set
+
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+
+    if len(new_password) < 6:
+        return False, "Password must be at least 6 characters"
+
+    try:
+        supabase = get_supabase()
+
+        # Update password
+        supabase.auth.update_user({
+            "password": new_password
+        })
+
+        return True, "Password updated successfully! You can now sign in with your new password."
+
+    except Exception as e:
+        error_msg = str(e).lower()
+
+        if "weak" in error_msg or "password" in error_msg:
+            return False, "Password is too weak. Use at least 6 characters with mixed case and numbers."
+        else:
+            return False, "Password update failed. Please try again."
 
 def check_authentication():
     """Check if user is currently authenticated"""

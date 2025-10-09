@@ -20,7 +20,8 @@ sys.path.append(str(project_root))
 
 from utils.auth import (
     init_auth, check_authentication, register_user, authenticate_user, 
-    logout, get_user_data, save_questionnaire, save_cbc_results
+    logout, get_user_data, save_questionnaire, save_cbc_results,
+    request_password_reset, update_password
 )
 from utils.navigation import setup_navigation
 from utils.ml_model import process_cbc_upload, get_biomarker_analysis, get_risk_interpretation
@@ -54,30 +55,34 @@ def show_landing_page():
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        tab1, tab2 = st.tabs(["Sign In", "Sign Up"])
+        tab1, tab2, tab3 = st.tabs(["Sign In", "Sign Up", "Forgot Password"])
         
         with tab1:
             st.subheader("Welcome Back")
             with st.form("signin_form"):
-                username = st.text_input("Username or Email")
+                username = st.text_input("Email Address")
                 password = st.text_input("Password", type="password")
                 signin_button = st.form_submit_button("Sign In", type="primary")
                 
                 if signin_button:
                     if username and password:
-                        success, user_id, email = authenticate_user(username, password)
+                        success, user_id, email, error_msg = authenticate_user(username, password)
                         if success:
                             st.session_state.authentication_status = True
                             st.session_state.username = username
                             st.session_state.user_id = user_id
                             st.session_state.user_data = get_user_data(user_id)
-                            st.success("Login successful!")
+                            st.success("✅ Login successful!")
                             time.sleep(1)
                             st.rerun()
                         else:
-                            st.error("Invalid username/email or password")
+                            st.error(f"❌ {error_msg}")
                     else:
-                        st.error("Please enter both username and password")
+                        st.error("Please enter both email and password")
+            
+            # Forgot password link
+            st.markdown("---")
+            st.caption("Forgot your password? Use the 'Forgot Password' tab above.")
         
         with tab2:
             st.subheader("Join Rhizome")
@@ -86,6 +91,10 @@ def show_landing_page():
                 email = st.text_input("Email Address")
                 new_password = st.text_input("Create Password", type="password")
                 confirm_password = st.text_input("Confirm Password", type="password")
+                
+                # Password requirements
+                st.caption("Password must be at least 6 characters")
+                
                 signup_button = st.form_submit_button("Create Account", type="primary")
                 
                 if signup_button:
@@ -93,14 +102,36 @@ def show_landing_page():
                         if new_password == confirm_password:
                             success, message = register_user(new_username, email, new_password)
                             if success:
-                                st.success(message)
-                                st.info("Please sign in with your new account")
+                                st.success(f"✅ {message}")
+                                st.info("💡 Please check your email to verify your account, then sign in.")
                             else:
-                                st.error(message)
+                                st.error(f"❌ {message}")
                         else:
-                            st.error("Passwords do not match")
+                            st.error("❌ Passwords do not match")
                     else:
-                        st.error("Please fill in all fields")
+                        st.error("❌ Please fill in all fields")
+        
+        with tab3:
+            st.subheader("Reset Your Password")
+            st.markdown("Enter your email address and we'll send you a link to reset your password.")
+            
+            with st.form("password_reset_form"):
+                reset_email = st.text_input("Email Address")
+                reset_button = st.form_submit_button("Send Reset Link", type="primary")
+                
+                if reset_button:
+                    if reset_email:
+                        success, message = request_password_reset(reset_email)
+                        if success:
+                            st.success(f"✅ {message}")
+                            st.info("💡 Click the link in the email to reset your password. The link will expire in 1 hour.")
+                        else:
+                            st.error(f"❌ {message}")
+                    else:
+                        st.error("❌ Please enter your email address")
+            
+            st.markdown("---")
+            st.caption("Remember your password? Use the 'Sign In' tab above.")
 
 def show_questionnaire_page():
     """Questionnaire and file upload page"""
@@ -437,12 +468,59 @@ def show_about_page():
             </div>
             """, unsafe_allow_html=True)
 
+def show_password_update_page():
+    """Page for updating password after clicking reset link"""
+    st.markdown("""
+    <div style='text-align: center; padding: 2rem 0;'>
+        <h1 style='color: #2E86AB; font-size: 3rem; margin-bottom: 0;'>🔑 Reset Password</h1>
+        <p style='font-size: 1.2rem; color: #888; margin: 2rem 0;'>
+            Enter your new password below
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        with st.form("update_password_form"):
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            
+            st.caption("Password must be at least 6 characters")
+            
+            update_button = st.form_submit_button("Update Password", type="primary")
+            
+            if update_button:
+                if new_password and confirm_password:
+                    if new_password == confirm_password:
+                        success, message = update_password(new_password)
+                        if success:
+                            st.success(f"✅ {message}")
+                            st.info("💡 You can now sign in with your new password.")
+                            time.sleep(2)
+                            # Clear query params and redirect to landing
+                            st.query_params.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+                    else:
+                        st.error("❌ Passwords do not match")
+                else:
+                    st.error("❌ Please fill in both password fields")
+
 def main():
     """Main application entry point"""
     
     # Initialize session state and authentication system
     init_session_state()
     init_auth()
+    
+    # Check for password reset flow
+    query_params = st.query_params
+    if 'type' in query_params and query_params['type'] == 'recovery':
+        # User clicked password reset link
+        show_password_update_page()
+        return
     
     # Check if user is authenticated
     if not check_authentication():
