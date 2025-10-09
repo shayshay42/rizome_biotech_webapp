@@ -45,6 +45,43 @@ def validate_email(email):
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
+def sync_user_profile(user_id, username):
+    """
+    Sync username to user_profiles table
+    This ensures username is stored in the database, not just in auth metadata
+
+    Args:
+        user_id: Supabase user UUID
+        username: Username to store
+
+    Returns:
+        bool: True if successful
+    """
+    try:
+        supabase = get_supabase()
+
+        # Check if profile already exists
+        existing = supabase.table('user_profiles').select('*').eq('id', user_id).execute()
+
+        if existing.data:
+            # Update existing profile
+            supabase.table('user_profiles').update({
+                'username': username,
+                'updated_at': 'now()'
+            }).eq('id', user_id).execute()
+        else:
+            # Create new profile (in case trigger didn't fire)
+            supabase.table('user_profiles').insert({
+                'id': user_id,
+                'username': username,
+                'display_name': username
+            }).execute()
+
+        return True
+    except Exception as e:
+        print(f"Error syncing user profile: {e}")
+        return False
+
 def register_user(username, email, password):
     """
     Register new user using Supabase Auth
@@ -77,12 +114,30 @@ def register_user(username, email, password):
             "password": password,
             "options": {
                 "data": {
-                    "username": username
+                    "username": username,
+                    "display_name": username,  # Also set display_name for visibility in dashboard
+                    "full_name": username  # Some apps use full_name field
                 }
             }
         })
 
         if response.user:
+            # Sync username to user_profiles table
+            # (Trigger should handle this, but we'll do it explicitly as backup)
+            sync_user_profile(response.user.id, username)
+            
+            # Also update the auth user metadata to ensure it's set
+            try:
+                supabase.auth.update_user({
+                    "data": {
+                        "username": username,
+                        "display_name": username,
+                        "full_name": username
+                    }
+                })
+            except:
+                pass  # This might fail if email confirmation is required
+
             return True, "Registration successful! Please check your email to verify your account."
         else:
             return False, "Registration failed. Please try again."
@@ -131,14 +186,17 @@ def authenticate_user(email, password):
             user_id = response.user.id
             user_email = response.user.email
 
+            # Get username from metadata
+            user_metadata = response.user.user_metadata or {}
+            username = user_metadata.get('username', user_email.split('@')[0])
+
+            # Sync username to user_profiles table on login
+            sync_user_profile(user_id, username)
+
             # Store session in Streamlit state
             st.session_state.authentication_status = True
             st.session_state.user_email = user_email
             st.session_state.user_id = user_id
-
-            # Get username from metadata
-            user_metadata = response.user.user_metadata or {}
-            username = user_metadata.get('username', user_email.split('@')[0])
             st.session_state.username = username
 
             return True, user_id, user_email, "Login successful"

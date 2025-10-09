@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rhizome CBC Analysis Web Application
+Rizome CBC Analysis Web Application
 Main Streamlit application with persistent authentication and storage
 """
 
@@ -33,7 +33,7 @@ def init_session_state():
 
 # Page configuration
 st.set_page_config(
-    page_title="Rhizome CBC Analysis",
+    page_title="Rizome CBC Analysis",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -43,7 +43,7 @@ def show_landing_page():
     """Landing page with logo, sign-in, and sign-up"""
     st.markdown("""
     <div style='text-align: center; padding: 2rem 0;'>
-        <h1 style='color: #2E86AB; font-size: 3rem; margin-bottom: 0;'>🧬 Rhizome</h1>
+        <h1 style='color: #2E86AB; font-size: 3rem; margin-bottom: 0;'>🧬 Rizome Biotech Inc.</h1>
         <h3 style='color: #666; margin-top: 0;'>Advanced CBC Analysis Platform</h3>
         <p style='font-size: 1.2rem; color: #888; margin: 2rem 0;'>
             Transforming Complete Blood Count data into actionable health insights
@@ -85,7 +85,7 @@ def show_landing_page():
             st.caption("Forgot your password? Use the 'Forgot Password' tab above.")
         
         with tab2:
-            st.subheader("Join Rhizome")
+            st.subheader("Join Rizome")
             with st.form("signup_form"):
                 new_username = st.text_input("Choose Username")
                 email = st.text_input("Email Address")
@@ -406,13 +406,13 @@ def show_dashboard_page():
 
 def show_about_page():
     """About us page with team profiles"""
-    st.title("👥 About Rhizome")
+    st.title("👥 About Rizome")
     
     st.markdown("""
     <div style='text-align: center; padding: 2rem 0;'>
         <h2 style='color: #2E86AB;'>Transforming Healthcare Through Data Science</h2>
         <p style='font-size: 1.2rem; color: #666; max-width: 800px; margin: 0 auto;'>
-            Rhizome is pioneering the future of personalized medicine by leveraging advanced machine learning 
+            Rizome is pioneering the future of personalized medicine by leveraging advanced machine learning 
             to transform routine blood tests into actionable health insights. Our mission is to democratize 
             access to sophisticated health analytics and empower individuals to take control of their health journey.
         </p>
@@ -450,7 +450,7 @@ def show_about_page():
         },
         {
             "name": "Dr Kim Ma",
-            "role": "Chief Operational Officer",
+            "role": "Chief Medical Officer",
             "bio": "blurb",
             "avatar": "👩‍💼"
         }
