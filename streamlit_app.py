@@ -251,6 +251,14 @@ def show_questionnaire_page():
     
     st.markdown("Please complete the questionnaire and upload your CBC report")
     
+    # Let users choose entry method outside the form so toggling reruns immediately
+    input_method = st.radio(
+        "Choose how to provide your CBC values:",
+        ["📤 Upload Report (PDF/Image)", "✍️ Enter 7 Key Values Manually"],
+        key="cbc_input_method",
+        help="You can either upload a lab report or manually enter the 7 most important biomarkers"
+    )
+
     with st.form("health_questionnaire"):
         st.subheader("Personal Information")
         col1, col2 = st.columns(2)
@@ -284,11 +292,11 @@ def show_questionnaire_page():
                                     ["Fatigue", "Weakness", "Bruising", "Bleeding", 
                                      "Frequent Infections", "Weight Loss", "None"])
         
-        st.subheader("📋 CBC Report Upload")
+    st.subheader("📋 CBC Report Upload")
         
-        # Instructions for obtaining CBC report
-        with st.expander("ℹ️ How to Obtain Your Blood Test Report", expanded=False):
-            st.markdown("""
+    # Instructions for obtaining CBC report
+    with st.expander("ℹ️ How to Obtain Your Blood Test Report", expanded=False):
+        st.markdown("""
             ### 🇨🇦 For Quebec Residents (Carnet de Santé)
             
             **Option 1: Download from Quebec Health Portal**
@@ -336,13 +344,6 @@ def show_questionnaire_page():
             
             💡 **Tip:** If some values are missing, our system will estimate them using population averages.
             """)
-        
-        # Choose input method
-        input_method = st.radio(
-            "Choose how to provide your CBC values:",
-            ["📤 Upload Report (PDF/Image)", "✍️ Enter 7 Key Values Manually"],
-            help="You can either upload a lab report or manually enter the 7 most important biomarkers"
-        )
         
         uploaded_file = None
         manual_inputs = None
