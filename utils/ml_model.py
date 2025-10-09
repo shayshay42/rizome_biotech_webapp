@@ -20,7 +20,7 @@ def extract_cbc_from_pdf(uploaded_file) -> Dict:
     np.random.seed(hash(uploaded_file.name) % 1000)
     
     # Mock extracted CBC values with some realistic ranges
-    cbc_data = {
+    raw_values = {
         'WBC': np.random.uniform(4.0, 11.0),
         'RBC': np.random.uniform(4.0, 5.5),
         'Hemoglobin': np.random.uniform(11.0, 17.0),
@@ -38,10 +38,39 @@ def extract_cbc_from_pdf(uploaded_file) -> Dict:
     }
     
     # Calculate derived ratios (like NLR)
-    if cbc_data['Lymphocytes'] > 0:
-        cbc_data['NLR'] = cbc_data['Neutrophils'] / cbc_data['Lymphocytes']
+    if raw_values['Lymphocytes'] > 0:
+        raw_values['NLR'] = raw_values['Neutrophils'] / raw_values['Lymphocytes']
     else:
-        cbc_data['NLR'] = np.random.uniform(1.0, 5.0)
+        raw_values['NLR'] = np.random.uniform(1.0, 5.0)
+
+    # Harmonize keys to the canonical schema expected downstream
+    canonical_map = {
+        'WBC': raw_values['WBC'],
+        'RBC': raw_values['RBC'],
+        'HGB': raw_values['Hemoglobin'],
+        'HCT': raw_values['Hematocrit'],
+        'MCV': raw_values['MCV'],
+        'MCH': raw_values['MCH'],
+        'MCHC': raw_values['MCHC'],
+        'RDW': raw_values['RDW'],
+        'PLT': raw_values['Platelets'],
+        'MPV': np.random.uniform(7.0, 12.0),  # mock mean platelet volume
+        'NEUT_ABS': raw_values['Neutrophils'],
+        'LYMPH_ABS': raw_values['Lymphocytes'],
+        'MONO_ABS': raw_values['Monocytes'],
+        'EOS_ABS': raw_values['Eosinophils'],
+        'BASO_ABS': raw_values['Basophils'],
+        'NEUT_PCT': raw_values['Neutrophils'],
+        'LYMPH_PCT': raw_values['Lymphocytes'],
+        'MONO_PCT': raw_values['Monocytes'],
+        'EOS_PCT': raw_values['Eosinophils'],
+        'BASO_PCT': raw_values['Basophils'],
+        'NLR': raw_values['NLR'],
+        'MONO': raw_values['Monocytes']
+    }
+
+    # Always include the original descriptive keys for reference/UX downstream
+    cbc_data = {**raw_values, **canonical_map}
     
     return cbc_data
 

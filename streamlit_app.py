@@ -345,8 +345,8 @@ def show_questionnaire_page():
         )
         
         uploaded_file = None
-        manual_cbc_data = None
-        test_date = None
+        manual_inputs = None
+        manual_test_date = None
         
         if input_method == "📤 Upload Report (PDF/Image)":
             uploaded_file = st.file_uploader(
@@ -359,72 +359,47 @@ def show_questionnaire_page():
             st.caption("💡 You can find these values on your lab results. If a value is missing, leave it blank and we'll estimate it.")
             
             col_a, col_b = st.columns(2)
-            
+            manual_inputs = {}
+
+            col_a_fields = [
+                ("WBC", "WBC (White Blood Cells)", "Normal range: 4.0-11.0 × 10⁹/L", "e.g., 7.2"),
+                ("NLR", "NLR (Neutrophil/Lymphocyte Ratio)", "Normal range: 1.0-3.0 (ratio)", "e.g., 2.5"),
+                ("HGB", "HGB (Hemoglobin)", "Normal range: 120-170 g/L", "e.g., 145"),
+                ("MCV", "MCV (Mean Corpuscular Volume)", "Normal range: 80-100 fL", "e.g., 88")
+            ]
+            col_b_fields = [
+                ("PLT", "PLT (Platelets)", "Normal range: 150-450 × 10⁹/L", "e.g., 250"),
+                ("RDW", "RDW (Red Cell Distribution Width)", "Normal range: 11.5-14.5 %", "e.g., 13.2"),
+                ("MONO", "MONO (Monocytes)", "Normal range: 0.2-1.0 × 10⁹/L", "e.g., 0.6")
+            ]
+
             with col_a:
-                manual_wbc = st.number_input(
-                    "WBC (White Blood Cells)", 
-                    min_value=0.0, max_value=50.0, value=None,
-                    help="Normal range: 4.0-11.0 × 10⁹/L",
-                    placeholder="e.g., 7.2"
-                )
-                manual_nlr = st.number_input(
-                    "NLR (Neutrophil/Lymphocyte Ratio)", 
-                    min_value=0.0, max_value=50.0, value=None,
-                    help="Normal range: 1.0-3.0 (ratio)",
-                    placeholder="e.g., 2.5"
-                )
-                manual_hgb = st.number_input(
-                    "HGB (Hemoglobin)", 
-                    min_value=0.0, max_value=200.0, value=None,
-                    help="Normal range: 120-170 g/L",
-                    placeholder="e.g., 145"
-                )
-                manual_mcv = st.number_input(
-                    "MCV (Mean Corpuscular Volume)", 
-                    min_value=0.0, max_value=150.0, value=None,
-                    help="Normal range: 80-100 fL",
-                    placeholder="e.g., 88"
-                )
-            
+                for marker, label, help_text, example in col_a_fields:
+                    manual_inputs[marker] = st.text_input(
+                        label,
+                        value="",
+                        placeholder=example,
+                        help=help_text,
+                        key=f"manual_{marker.lower()}"
+                    )
+
             with col_b:
-                manual_plt = st.number_input(
-                    "PLT (Platelets)", 
-                    min_value=0.0, max_value=1000.0, value=None,
-                    help="Normal range: 150-450 × 10⁹/L",
-                    placeholder="e.g., 250"
-                )
-                manual_rdw = st.number_input(
-                    "RDW (Red Cell Distribution Width)", 
-                    min_value=0.0, max_value=50.0, value=None,
-                    help="Normal range: 11.5-14.5 %",
-                    placeholder="e.g., 13.2"
-                )
-                manual_mono = st.number_input(
-                    "MONO (Monocytes)", 
-                    min_value=0.0, max_value=10.0, value=None,
-                    help="Normal range: 0.2-1.0 × 10⁹/L",
-                    placeholder="e.g., 0.6"
-                )
-                test_date = st.date_input(
-                    "Test Date",
-                    value=None,
+                for marker, label, help_text, example in col_b_fields:
+                    manual_inputs[marker] = st.text_input(
+                        label,
+                        value="",
+                        placeholder=example,
+                        help=help_text,
+                        key=f"manual_{marker.lower()}"
+                    )
+
+                manual_test_date = st.date_input(
+                    "Test Date (optional)",
+                    value=datetime.today().date(),
                     help="When was this blood test taken?"
                 )
-            
-            # Collect manual values (only if at least one is provided)
-            manual_values = {
-                'WBC': manual_wbc,
-                'NLR': manual_nlr,
-                'HGB': manual_hgb,
-                'MCV': manual_mcv,
-                'PLT': manual_plt,
-                'RDW': manual_rdw,
-                'MONO': manual_mono
-            }
-            
-            # Check if user entered any values
-            if any(v is not None for v in manual_values.values()):
-                manual_cbc_data = manual_values
+                if st.checkbox("I don’t want to save a test date", value=False, key="skip_manual_test_date"):
+                    manual_test_date = None
         
         submit_button = st.form_submit_button("Submit Assessment", type="primary")
         
@@ -447,6 +422,26 @@ def show_questionnaire_page():
             # Save to database
             questionnaire_id = save_questionnaire(st.session_state.user_id, questionnaire_data)
             
+            manual_cbc_data = None
+            if manual_inputs is not None:
+                manual_cbc_data = {}
+                manual_parse_errors = []
+                for marker, raw_value in manual_inputs.items():
+                    cleaned_value = (raw_value or "").strip()
+                    if cleaned_value:
+                        normalized = cleaned_value.replace(',', '.')
+                        try:
+                            manual_cbc_data[marker] = float(normalized)
+                        except ValueError:
+                            manual_parse_errors.append(f"{marker} → '{cleaned_value}'")
+
+                if manual_parse_errors:
+                    st.error("❌ We couldn't interpret these manual entries as numbers: " + ", ".join(manual_parse_errors))
+                    st.stop()
+
+                if not manual_cbc_data:
+                    manual_cbc_data = None
+
             if uploaded_file or manual_cbc_data:
                 with st.spinner("Processing your CBC data..."):
                     # STEP 1: Extract/Collect CBC data
@@ -458,16 +453,16 @@ def show_questionnaire_page():
                     else:
                         # Use manually entered values
                         cbc_data = {
-                            'WBC': manual_cbc_data['WBC'],
-                            'NLR': manual_cbc_data['NLR'],
-                            'HGB': manual_cbc_data['HGB'],
-                            'MCV': manual_cbc_data['MCV'],
-                            'PLT': manual_cbc_data['PLT'],
-                            'RDW': manual_cbc_data['RDW'],
-                            'MONO': manual_cbc_data['MONO']
+                            'WBC': manual_cbc_data.get('WBC'),
+                            'NLR': manual_cbc_data.get('NLR'),
+                            'HGB': manual_cbc_data.get('HGB'),
+                            'MCV': manual_cbc_data.get('MCV'),
+                            'PLT': manual_cbc_data.get('PLT'),
+                            'RDW': manual_cbc_data.get('RDW'),
+                            'MONO': manual_cbc_data.get('MONO')
                         }
                         file_format = 'manual_entry'
-                        test_date_to_save = test_date  # User-specified date
+                        test_date_to_save = manual_test_date  # User-specified date
                     
                     # STEP 2: Save CBC data to database FIRST
                     cbc_result_id = save_cbc_data(
