@@ -79,14 +79,20 @@ class CancerClassifier:
         self.model = None
         self.model_version = "autogluon_catboost_v1"
         self.model_loaded = False
+        self.model_load_error = None
+        self.model_path = MODEL_PATH
 
     def load_model(self) -> bool:
+        self.model_load_error = None
+
         if not MODEL_PATH.exists():
-            print(
-                "❌ CatBoost model artifact not found. Expected at "
-                f"{MODEL_PATH}. Falling back to simulation mode."
+            message = (
+                "CatBoost model artifact not found. "
+                f"Expected at {MODEL_PATH}. Falling back to simulation mode."
             )
+            print(f"❌ {message}")
             self.model_loaded = False
+            self.model_load_error = message
             return False
 
         try:
@@ -107,12 +113,16 @@ class CancerClassifier:
             if self.model_loaded:
                 print(f"✅ CatBoost model loaded from {MODEL_PATH}")
             else:
-                print("⚠️ Model bundle did not contain an estimator. Using simulation mode.")
+                warning = "Model bundle did not contain an estimator. Using simulation mode."
+                print(f"⚠️ {warning}")
+                self.model_load_error = warning
             return self.model_loaded
         except Exception as exc:  # pragma: no cover - defensive logging
             print(f"❌ Failed to load CatBoost model: {exc}")
             print("   Using fallback simulation mode")
             self.model_loaded = False
+            self.model = None
+            self.model_load_error = str(exc)
             return False
 
     def validate_input(self, data: Dict) -> Tuple[bool, str]:
@@ -187,13 +197,13 @@ class CancerClassifier:
             }
 
         try:
-            input_df = pd.DataFrame([features])[self.required_features]
+            feature_importance = None
 
             if self.model_loaded and self.model is not None:
+                input_df = pd.DataFrame([features])[self.required_features]
                 prediction_proba = self.model.predict_proba(input_df)[0]
                 cancer_probability = float(prediction_proba[1])
 
-                feature_importance = None
                 try:
                     importances = getattr(self.model, "feature_importances_", None)
                     if importances is not None:
@@ -208,7 +218,6 @@ class CancerClassifier:
 
             else:
                 cancer_probability = self._simulate_prediction(features)
-                feature_importance = None
                 model_used = "Simulation (rule-based)"
 
             base_confidence = max(cancer_probability, 1 - cancer_probability)
@@ -247,6 +256,9 @@ class CancerClassifier:
                 'risk_level': risk_level,
                 'risk_color': risk_color,
                 'model_used': model_used,
+                'model_loaded': self.model_loaded,
+                'model_load_error': self.model_load_error,
+                'model_path': str(self.model_path),
                 'model_features': features,
                 'missing_features': missing_features,
                 'imputed_count': imputed_count,
@@ -265,7 +277,11 @@ class CancerClassifier:
                 'cancer_probability': 0.0,
                 'confidence': 0.0,
                 'missing_features': missing_features,
-                'imputed_count': imputed_count
+                'imputed_count': imputed_count,
+                'model_used': 'Simulation (error)',
+                'model_loaded': self.model_loaded,
+                'model_load_error': self.model_load_error,
+                'model_path': str(self.model_path)
             }
 
     def _simulate_prediction(self, features: Dict) -> float:

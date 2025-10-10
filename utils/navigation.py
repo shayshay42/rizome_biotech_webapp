@@ -50,7 +50,7 @@ def setup_navigation():
         st.markdown("---")
         
         # Logout button
-        if st.button("🚪 Logout", type="secondary", use_container_width=True):
+    if st.button("🚪 Logout", type="secondary", width='stretch'):
             from utils.auth import logout
             logout()
     

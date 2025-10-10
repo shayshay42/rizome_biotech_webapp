@@ -105,10 +105,10 @@ def show_landing_page():
             st.markdown("### 📋 Legal")
             col_legal1, col_legal2 = st.columns(2)
             with col_legal1:
-                if st.button("📄 Terms of Service", use_container_width=True):
+                if st.button("📄 Terms of Service", width='stretch'):
                     st.switch_page("pages/terms_of_service.py")
             with col_legal2:
-                if st.button("🔒 Privacy Policy", use_container_width=True):
+                if st.button("🔒 Privacy Policy", width='stretch'):
                     st.switch_page("pages/privacy_policy.py")
             
             # Call to action in About Us tab
@@ -155,10 +155,10 @@ def show_landing_page():
                 st.markdown("Select a document below to open the full text in a dedicated page.")
                 col_t1, col_t2 = st.columns(2)
                 with col_t1:
-                    if st.button("📄 Terms of Service", key="terms_signup", use_container_width=True):
+                    if st.button("📄 Terms of Service", key="terms_signup", width='stretch'):
                         st.switch_page("pages/terms_of_service.py")
                 with col_t2:
-                    if st.button("🔒 Privacy Policy", key="privacy_signup", use_container_width=True):
+                    if st.button("🔒 Privacy Policy", key="privacy_signup", width='stretch'):
                         st.switch_page("pages/privacy_policy.py")
 
             with st.form("signup_form"):
@@ -635,7 +635,7 @@ def show_dashboard_page():
                     'thickness': 0.75,
                     'value': 80}}))
         fig_gauge.update_layout(height=350, font={'color': "darkblue", 'family': "Arial"})
-        st.plotly_chart(fig_gauge, use_container_width=True)
+    st.plotly_chart(fig_gauge, width='stretch')
     
     # Risk interpretation with detailed prediction if available
     if has_detailed_prediction and 'interpretation' in detailed_prediction:
@@ -650,11 +650,24 @@ def show_dashboard_page():
     </div>
     """, unsafe_allow_html=True)
     
-    # Show model information
+    model_used = None
+    model_load_error = None
     if has_detailed_prediction:
-        st.info("🎯 **Analysis powered by CatBoost ensemble** distilled from AutoGluon using 7 key CBC biomarkers")
+        model_used = detailed_prediction.get('model_used') or cbc_results.get('model_used')
+        model_load_error = detailed_prediction.get('model_load_error') or cbc_results.get('model_load_error')
     else:
-        st.info("📊 Analysis based on clinical risk factors and CBC patterns")
+        model_used = cbc_results.get('model_used')
+        model_load_error = cbc_results.get('model_load_error')
+
+    if model_used:
+        st.caption(f"🔍 Model engine: {model_used}")
+    else:
+        st.caption("� Model engine: Clinical risk heuristics")
+
+    if model_load_error:
+        st.error(f"⚠️ Model load issue detected: {model_load_error}")
+    elif model_used and "Simulation" in model_used:
+        st.warning("⚠️ Fall back to heuristic scoring because the CatBoost bundle wasn't available.")
     
     # Recommendations
     st.subheader("📋 Recommendations")
@@ -678,7 +691,7 @@ def show_dashboard_page():
             })
         
         bio_df = pd.DataFrame(bio_data)
-        st.dataframe(bio_df, use_container_width=True)
+        st.dataframe(bio_df, width='stretch')
         
         # Biomarker visualization
         col1, col2 = st.columns(2)
@@ -696,12 +709,12 @@ def show_dashboard_page():
                     )
                 ])
                 fig_bar.update_layout(title="Key Biomarkers", height=400)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
         
         with col2:
             # NLR trend (mock data for demonstration)
             if 'NLR' in biomarkers:
-                dates = pd.date_range(start='2024-01-01', periods=6, freq='M')
+                dates = pd.date_range(start='2024-01-01', periods=6, freq='ME')
                 nlr_values = [2.1, 2.3, 1.9, biomarkers['NLR'], 2.4, 2.0]
                 
                 fig_trend = px.line(
@@ -713,7 +726,7 @@ def show_dashboard_page():
                 fig_trend.add_hline(y=3.0, line_dash="dash", line_color="red", 
                                   annotation_text="High Risk Threshold")
                 
-                st.plotly_chart(fig_trend, use_container_width=True)
+                st.plotly_chart(fig_trend, width='stretch')
 
 def show_about_page():
     """About us page with team profiles"""
