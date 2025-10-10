@@ -131,7 +131,7 @@ def engineer_temporal_features(cbc_data: Dict) -> np.ndarray:
 
 def calculate_risk_score(cbc_vector: np.ndarray, questionnaire_data: Dict, cbc_data: Dict) -> float:
     """
-    Calculate cancer risk score using the production-trained XGBoost model
+    Calculate cancer risk score using the production CatBoost model
     Returns probability as percentage (0-100)
     """
     try:

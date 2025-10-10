@@ -75,8 +75,8 @@ def show_landing_page():
             st.markdown("""
             ### 🤖 Our Technology
             
-            - **AI Model**: AutoGluon ensemble (CatBoost, RandomForest, LightGBM)
-            - **Performance**: 99.83% ROC-AUC on cancer prognostic assignment
+            - **AI Model**: Bagged CatBoost classifier distilled from AutoGluon (CBC biomarkers)
+            - **Performance**: ROC-AUC validated via stratified train/test split
             - **Features**: 7 key biomarkers (WBC, NLR, HGB, MCV, PLT, RDW, MONO)
             - **Training Data**: Clinical datasets from Quebec health system
             - **Privacy**: End-to-end encryption, Row Level Security
@@ -652,7 +652,7 @@ def show_dashboard_page():
     
     # Show model information
     if has_detailed_prediction:
-        st.info("🎯 **Analysis powered by XGBoost ML model** (99.63% validation AUC) trained on 54,598 patients using 7 key CBC biomarkers")
+        st.info("🎯 **Analysis powered by CatBoost ensemble** distilled from AutoGluon using 7 key CBC biomarkers")
     else:
         st.info("📊 Analysis based on clinical risk factors and CBC patterns")
     

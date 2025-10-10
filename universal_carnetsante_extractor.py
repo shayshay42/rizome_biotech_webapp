@@ -5,6 +5,7 @@ Handles both traditional lab reports and Quebec Health Booklet formats
 """
 
 import re
+import unicodedata
 import PyPDF2
 from pathlib import Path
 from datetime import datetime
@@ -89,14 +90,24 @@ class UniversalCarnetSanteExtractor:
             'NRBC REL.': 'NRBC_PCT'
         }
     
+    def _normalize_text(self, text: str) -> str:
+        normalized = unicodedata.normalize('NFKD', text)
+        return normalized.encode('ascii', 'ignore').decode('ascii').lower()
+
     def detect_format(self, text: str) -> str:
         """Detect which CarnetSante format we're dealing with"""
-        if 'Carnet santé' in text and 'Hémogramme' in text:
+        normalized = self._normalize_text(text)
+
+        if 'carnet sante' in normalized and ('hemogramme' in normalized or 'hematology' in normalized):
             return 'quebec_health_booklet'
-        elif 'PATIENT EXTERNE' in text and 'H E M A T O L O G I E' in text:
+
+        if 'patient externe' in normalized and ('hematologie' in normalized or 'hematology' in normalized):
             return 'traditional_lab'
-        else:
-            return 'unknown'
+
+        if 'carnet sante' in normalized:
+            return 'quebec_health_booklet'
+
+        return 'unknown'
     
     def extract_patient_info_traditional(self, text: str) -> Dict:
         """Extract patient info from traditional lab format"""
@@ -446,27 +457,39 @@ class UniversalCarnetSanteExtractor:
                     text += page.extract_text() + "\n"
             
             format_type = self.detect_format(text)
-            
+
+            traditional_info = self.extract_patient_info_traditional(text)
+            booklet_info = self.extract_patient_info_booklet(text)
+            traditional_cbc = self.extract_cbc_traditional(text)
+            booklet_cbc = self.extract_cbc_booklet(text)
+
+            # Determine the most plausible extraction by comparing number of biomarkers captured
+            if len(booklet_cbc) >= len(traditional_cbc) and len(booklet_cbc) > 0:
+                chosen_format = 'quebec_health_booklet'
+                patient_info = booklet_info or traditional_info
+                cbc_data = booklet_cbc
+            elif len(traditional_cbc) > 0:
+                chosen_format = 'traditional_lab'
+                patient_info = traditional_info or booklet_info
+                cbc_data = traditional_cbc
+            else:
+                chosen_format = format_type
+                patient_info = traditional_info or booklet_info
+                cbc_data = {}
+
             result = {
-                'patient_info': {},
-                'cbc_data': {},
+                'patient_info': patient_info,
+                'cbc_data': cbc_data,
                 'additional_tests': {},
                 'extraction_metadata': {
-                    'format': format_type,
+                    'format': chosen_format,
                     'source_file': file_path,
                     'extracted_at': datetime.now().isoformat(),
                     'success': False,
                     'cbc_tests_found': 0
                 }
             }
-            
-            if format_type == 'traditional_lab':
-                result['patient_info'] = self.extract_patient_info_traditional(text)
-                result['cbc_data'] = self.extract_cbc_traditional(text)
-            elif format_type == 'quebec_health_booklet':
-                result['patient_info'] = self.extract_patient_info_booklet(text)
-                result['cbc_data'] = self.extract_cbc_booklet(text)
-            
+
             # Calculate NLR if possible
             nlr = self.calculate_nlr(result['cbc_data'])
             if nlr:

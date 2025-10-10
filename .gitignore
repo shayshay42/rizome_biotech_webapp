@@ -1,5 +1,8 @@
-# Model files (too large for git - download separately)
+# Model files (download at runtime)
 models/
+!models/README.md
+!models/catboost_cbc.pkl
+models/ag_model_smote/
 
 # Database files
 *.db
@@ -7,7 +10,9 @@ data/*.db
 data/*.backup.db
 
 # Large local resources (keep out of git)
-assets/
+assets/*
+!assets/carnetsante/
+!assets/carnetsante/**
 output/
 *.zip
 *.tar
@@ -16,6 +21,7 @@ output/
 *.xlsx
 *.xls
 *.pdf
+!assets/carnetsante/*.pdf
 *.tex
 *.html
 .specstory/
@@ -24,9 +30,9 @@ output/
 *.md
 !README.md
 
-# Test suites (keep local)
-test_*.py
-tests/
+# Test suites (allow tracked test modules)
+!tests/
+!tests/**
 
 # Python
 __pycache__/
