@@ -602,9 +602,9 @@ def update_cbc_predictions(cbc_result_id: int, prediction_results: Dict) -> bool
         ','.join(missing_biomarkers) if missing_biomarkers else None
     )
 
-    interpretation = prediction_results.get('interpretation')
-    if interpretation and not isinstance(interpretation, str):
-        interpretation = json.dumps(interpretation)
+    # Store the FULL prediction result in risk_interpretation so we can retrieve all details
+    # This includes: model_features, missing_features, imputed_count, interpretation, etc.
+    full_prediction_json = json.dumps(prediction_results)
 
     add_column_if_exists('prediction', prediction_results.get('prediction'))
     add_column_if_exists('prediction_label', prediction_results.get('prediction_label'))
@@ -623,7 +623,7 @@ def update_cbc_predictions(cbc_result_id: int, prediction_results: Dict) -> bool
     add_column_if_exists('missing_biomarkers', missing_value)
     add_column_if_exists('imputed_count', prediction_results.get('imputed_count', 0))
     add_column_if_exists('imputation_warning', prediction_results.get('imputation_warning'))
-    add_column_if_exists('risk_interpretation', interpretation)
+    add_column_if_exists('risk_interpretation', full_prediction_json)
 
     model_features = prediction_results.get('model_features')
     if model_features is not None:

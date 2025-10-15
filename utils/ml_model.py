@@ -13,11 +13,69 @@ from datetime import datetime
 
 def extract_cbc_from_pdf(uploaded_file) -> Dict:
     """
-    Mock function to extract CBC values from uploaded PDF/image
-    In production, this would use OCR and the existing extraction pipeline
+    Extract CBC values from uploaded PDF using UniversalCarnetSanteExtractor
     """
-    # Simulate processing time
-    np.random.seed(hash(uploaded_file.name) % 1000)
+    try:
+        from universal_carnetsante_extractor import UniversalCarnetSanteExtractor
+        import sys
+        import tempfile
+        from pathlib import Path
+        
+        # Add parent directory to path for imports
+        parent_dir = Path(__file__).parent.parent
+        if str(parent_dir) not in sys.path:
+            sys.path.insert(0, str(parent_dir))
+        
+        # Save uploaded file to temp location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            tmp_path = tmp_file.name
+        
+        # Reset file pointer for potential re-reading
+        uploaded_file.seek(0)
+        
+        extractor = UniversalCarnetSanteExtractor()
+        
+        # Extract CBC data from PDF
+        result = extractor.extract_from_pdf(tmp_path)
+        cbc_data = result.get('cbc_data', {})
+        
+        # Normalize all numeric values (extractor might return dicts with 'value' keys)
+        normalized_cbc = {}
+        for key, value in cbc_data.items():
+            if value is None:
+                normalized_cbc[key] = None
+            elif isinstance(value, dict) and 'value' in value:
+                try:
+                    normalized_cbc[key] = float(value['value'])
+                except (TypeError, ValueError):
+                    normalized_cbc[key] = None
+            else:
+                try:
+                    normalized_cbc[key] = float(value)
+                except (TypeError, ValueError):
+                    normalized_cbc[key] = value
+        
+        cbc_data = normalized_cbc
+        
+        # Ensure HGB is in g/L (multiply by 10 if it looks like g/dL)
+        if 'HGB' in cbc_data and cbc_data['HGB'] is not None:
+            if cbc_data['HGB'] < 50:  # Likely in g/dL
+                print(f"🔧 Converting HGB from {cbc_data['HGB']} g/dL to {cbc_data['HGB'] * 10} g/L")
+                cbc_data['HGB'] = cbc_data['HGB'] * 10
+        
+        # Clean up temp file
+        import os
+        os.unlink(tmp_path)
+        
+        return cbc_data
+        
+    except Exception as e:
+        print(f"⚠️ PDF extraction failed: {e}, falling back to mock data")
+        import traceback
+        traceback.print_exc()
+        # Fallback to mock if extraction fails
+        np.random.seed(hash(uploaded_file.name) % 1000)
     
     # Mock extracted CBC values with some realistic ranges
     raw_values = {

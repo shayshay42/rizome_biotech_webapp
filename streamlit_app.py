@@ -287,14 +287,16 @@ def show_questionnaire_page():
                 st.write(f"**Activity Level:** {existing_data.get('activity_level')}")
                 st.write(f"**Smoking:** {existing_data.get('smoking')}")
     
-    st.markdown("Please complete the questionnaire and upload your CBC report")
+    st.markdown("Please complete the questionnaire and provide your CBC values")
     
     # Let users choose entry method outside the form so toggling reruns immediately
+    # Default to manual entry (index=0 for first option)
     input_method = st.radio(
         "Choose how to provide your CBC values:",
-        ["📤 Upload Report (PDF/Image)", "✍️ Enter 7 Key Values Manually"],
+        ["✍️ Enter 7 Key Values Manually", "📤 Upload Report (PDF/Image)"],
+        index=0,
         key="cbc_input_method",
-        help="You can either upload a lab report or manually enter the 7 most important biomarkers"
+        help="You can manually enter the 7 most important biomarkers or upload a lab report"
     )
 
     with st.form("health_questionnaire"):
@@ -543,6 +545,14 @@ def show_questionnaire_page():
                     # Run ML prediction on database data
                     detailed_prediction = predict_cancer_risk(cbc_data_from_db)
                     
+                    # Debug: show what the model predicted
+                    print(f"🔍 DEBUG: Full prediction result = {detailed_prediction}")
+                    print(f"🔍 DEBUG: CBC data from DB = {cbc_data_from_db}")
+                    print(f"🔍 DEBUG: Predicted cancer_probability_pct = {detailed_prediction.get('cancer_probability_pct')}")
+                    print(f"🔍 DEBUG: Model used = {detailed_prediction.get('model_used')}")
+                    if 'error' in detailed_prediction:
+                        print(f"❌ DEBUG: ERROR in prediction = {detailed_prediction.get('error')}")
+                    
                     if 'error' in detailed_prediction:
                         # Fallback to questionnaire-based risk
                         from utils.ml_model import _calculate_questionnaire_risk
@@ -568,7 +578,7 @@ def show_questionnaire_page():
                 time.sleep(2)
                 st.rerun()
             else:
-                st.warning("Please either upload your CBC report OR enter the 7 key values manually to complete the assessment")
+                st.warning("Please either enter the 7 key values manually OR upload your CBC report to complete the assessment")
 
 def show_dashboard_page():
     """User profile page with data visualization panel"""
@@ -590,18 +600,9 @@ def show_dashboard_page():
     # Get CBC results
     cbc_results = user_data.get('cbc_results')
 
-    def _coerce_score(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            num = float(value)
-        except (TypeError, ValueError):
-            return None
-        if 0 <= num <= 1:
-            num *= 100
-        return num
-
-    risk_score = _coerce_score(cbc_results.get('risk_score'))
+    # Get risk score - try cancer_probability_pct first (already a percentage 0-100)
+    # Then fall back to other fields
+    risk_score = None
     
     # Try to get detailed prediction results
     try:
@@ -610,52 +611,56 @@ def show_dashboard_page():
     except Exception:
         detailed_prediction = {}
         has_detailed_prediction = False
-
-    if risk_score is None:
-        candidates = [
-            detailed_prediction.get('cancer_probability_pct'),
-            detailed_prediction.get('cancer_probability'),
-            cbc_results.get('cancer_probability')
-        ]
-        for candidate in candidates:
-            coerced = _coerce_score(candidate)
-            if coerced is not None:
-                risk_score = coerced
-                break
-
-    if risk_score is None:
+    
+    # Priority order: cancer_probability_pct (already %) > cancer_probability (decimal 0-1)
+    if cbc_results.get('cancer_probability_pct') is not None:
+        risk_score = float(cbc_results.get('cancer_probability_pct'))
+    elif cbc_results.get('risk_score') is not None:
+        risk_score = float(cbc_results.get('risk_score'))
+    elif detailed_prediction.get('cancer_probability_pct') is not None:
+        risk_score = float(detailed_prediction.get('cancer_probability_pct'))
+    elif cbc_results.get('cancer_probability') is not None:
+        # This is a decimal (0-1), convert to percentage
+        risk_score = float(cbc_results.get('cancer_probability')) * 100
+    elif detailed_prediction.get('cancer_probability') is not None:
+        # This is a decimal (0-1), convert to percentage
+        risk_score = float(detailed_prediction.get('cancer_probability')) * 100
+    else:
         risk_score = 0.0
 
     risk_score = max(0.0, min(100.0, risk_score))
     
-    # Get standardized biomarkers from database
-    biomarkers = {
-        'WBC': cbc_results.get('wbc'),
-        'RBC': cbc_results.get('rbc'),
-        'Hemoglobin': cbc_results.get('hgb'),
-        'Hematocrit': cbc_results.get('hct'),
-        'MCV': cbc_results.get('mcv'),
-        'Platelets': cbc_results.get('plt'),
-        'RDW': cbc_results.get('rdw'),
-        'NLR': cbc_results.get('nlr')
-    }
-    # Filter out None values
-    biomarkers = {k: v for k, v in biomarkers.items() if v is not None}
+    # Get model information
+    model_used = None
+    model_load_error = None
+    if has_detailed_prediction:
+        model_used = detailed_prediction.get('model_used') or cbc_results.get('model_used')
+        model_load_error = detailed_prediction.get('model_load_error') or cbc_results.get('model_load_error')
+    else:
+        model_used = cbc_results.get('model_used')
+        model_load_error = cbc_results.get('model_load_error')
     
-    # Display cancer risk prominently
+    # Risk interpretation
+    if has_detailed_prediction and 'interpretation' in detailed_prediction:
+        risk_info = detailed_prediction['interpretation']
+    else:
+        risk_info = get_risk_interpretation(risk_score)
+    
+    # ========== SIMPLIFIED DASHBOARD ==========
+    
+    # 1. CANCER RISK GAUGE
+    st.markdown("### 🎯 Cancer Risk Assessment")
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # Cancer Risk Gauge (0-100 scale)
-        gauge_title = "Cancer Risk Score (%)"
         gauge_color = "red" if risk_score > 50 else "orange" if risk_score > 20 else "green"
         
         fig_gauge = go.Figure(go.Indicator(
             mode = "gauge+number",
             value = risk_score,
             domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': gauge_title, 'font': {'size': 24}},
-            number = {'suffix': "%", 'font': {'size': 40}},
+            title = {'text': "Cancer Risk Score", 'font': {'size': 24}},
+            number = {'suffix': "%", 'font': {'size': 40}, 'valueformat': '.2f'},
             gauge = {
                 'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
                 'bar': {'color': gauge_color},
@@ -672,13 +677,7 @@ def show_dashboard_page():
                     'thickness': 0.75,
                     'value': 80}}))
         fig_gauge.update_layout(height=350, font={'color': "darkblue", 'family': "Arial"})
-    _render_plotly_chart(fig_gauge)
-    
-    # Risk interpretation with detailed prediction if available
-    if has_detailed_prediction and 'interpretation' in detailed_prediction:
-        risk_info = detailed_prediction['interpretation']
-    else:
-        risk_info = get_risk_interpretation(risk_score)
+        _render_plotly_chart(fig_gauge)
     
     st.markdown(f"""
     <div style='text-align: center; padding: 1rem; background-color: {risk_info['color']}20; border-radius: 10px; margin: 1rem 0;'>
@@ -687,83 +686,134 @@ def show_dashboard_page():
     </div>
     """, unsafe_allow_html=True)
     
-    model_used = None
-    model_load_error = None
-    if has_detailed_prediction:
-        model_used = detailed_prediction.get('model_used') or cbc_results.get('model_used')
-        model_load_error = detailed_prediction.get('model_load_error') or cbc_results.get('model_load_error')
-    else:
-        model_used = cbc_results.get('model_used')
-        model_load_error = cbc_results.get('model_load_error')
-
     if model_used:
-        st.caption(f"🔍 Model engine: {model_used}")
+        st.caption(f"🔍 Model: {model_used}")
     else:
-        st.caption("� Model engine: Clinical risk heuristics")
-
+        st.caption("ℹ️ Model: Clinical risk heuristics")
+    
     if model_load_error:
-        st.error(f"⚠️ Model load issue detected: {model_load_error}")
-    elif model_used and "Simulation" in model_used:
-        st.warning("⚠️ Fall back to heuristic scoring because the CatBoost bundle wasn't available.")
+        st.error(f"⚠️ Model load issue: {model_load_error}")
     
-    # Recommendations
-    st.subheader("📋 Recommendations")
-    for i, rec in enumerate(risk_info['recommendations'], 1):
-        st.write(f"{i}. {rec}")
+    st.markdown("---")
     
-    # Biomarker Analysis
-    if biomarkers:
-        st.subheader("📊 Biomarker Analysis")
+    # 2. COMPREHENSIVE CBC DATA TABLE (Extracted + Model Input)
+    st.markdown("### 📊 CBC Data & Model Input")
+    st.caption("Shows extracted values from your report and values used by the prediction model")
+    
+    # Get model features from detailed prediction
+    model_features = None
+    missing_features = []
+    imputed_count = 0
+    
+    if has_detailed_prediction:
+        model_features = detailed_prediction.get('model_features')
+        missing_features = detailed_prediction.get('missing_features', [])
+        imputed_count = detailed_prediction.get('imputed_count', 0)
+    
+    # Build comprehensive table data
+    feature_metadata = {
+        'WBC': ('K/uL', 'White Blood Cells'),
+        'HGB': ('g/L', 'Hemoglobin'),
+        'MCV': ('fL', 'Mean Corpuscular Volume'),
+        'PLT': ('K/uL', 'Platelets'),
+        'RDW': ('%', 'Red Cell Distribution Width'),
+        'NLR': ('ratio', 'Neutrophil-to-Lymphocyte Ratio'),
+        'MONO': ('K/uL', 'Monocytes Absolute')
+    }
+    
+    # Map database fields to feature keys
+    db_field_map = {
+        'WBC': 'wbc',
+        'HGB': 'hgb',
+        'MCV': 'mcv',
+        'PLT': 'plt',
+        'RDW': 'rdw',
+        'NLR': 'nlr',
+        'MONO': 'mono_abs'
+    }
+    
+    table_data = []
+    for feature_key in ['WBC', 'HGB', 'MCV', 'PLT', 'RDW', 'NLR', 'MONO']:
+        unit, full_name = feature_metadata[feature_key]
         
-        biomarker_analysis = get_biomarker_analysis(biomarkers)
+        # Get extracted value from database
+        db_field = db_field_map[feature_key]
+        extracted_value = cbc_results.get(db_field)
         
-        # Create biomarker table
-        bio_data = []
-        for bio, data in biomarker_analysis.items():
-            bio_data.append({
-                'Biomarker': bio,
-                'Value': f"{data['value']} {data['unit']}",
-                'Normal Range': f"{data['range']} {data['unit']}",
-                'Status': f"{data['flag']} {data['status']}"
+        # Get model input value
+        model_value = model_features.get(feature_key) if model_features else None
+        
+        # Determine source
+        is_imputed = feature_key.upper() in [f.upper() for f in missing_features]
+        
+        if extracted_value is not None:
+            extracted_display = f"{extracted_value:.2f}"
+            source = "🔸 Imputed" if is_imputed else "✅ Extracted"
+        else:
+            extracted_display = "—"
+            source = "🔸 Imputed" if is_imputed else "—"
+        
+        # Model input (what was actually used for prediction)
+        if model_value is not None:
+            model_display = f"{model_value:.2f}"
+        else:
+            model_display = "—"
+        
+        table_data.append({
+            'Feature': f"{feature_key}",
+            'Name': full_name,
+            'Extracted Value': extracted_display,
+            'Model Input': model_display,
+            'Unit': unit,
+            'Source': source
+        })
+    
+    # Create DataFrame and display
+    import pandas as pd
+    df = pd.DataFrame(table_data)
+    
+    # Style the dataframe
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Feature": st.column_config.TextColumn("Feature", width="small"),
+            "Name": st.column_config.TextColumn("Name", width="medium"),
+            "Extracted Value": st.column_config.TextColumn("Extracted", width="small"),
+            "Model Input": st.column_config.TextColumn("Model Input", width="small"),
+            "Unit": st.column_config.TextColumn("Unit", width="small"),
+            "Source": st.column_config.TextColumn("Source", width="small")
+        }
+    )
+    
+    # Summary info
+    if imputed_count > 0:
+        st.info(f"ℹ️ {imputed_count} feature(s) were imputed using median population values (marked with 🔸)")
+    else:
+        st.success("✅ All features were extracted from your report - no imputation needed")
+    
+    st.markdown("---")
+    
+    # 4. DATA VERIFICATION SECTION
+    with st.expander("🔍 Data Verification Details", expanded=False):
+        st.markdown("**Database Record:**")
+        st.json({
+            'cbc_result_id': cbc_results.get('id'),
+            'risk_score': cbc_results.get('risk_score'),
+            'cancer_probability_pct': cbc_results.get('cancer_probability_pct'),
+            'model_used': cbc_results.get('model_used'),
+            'created_at': str(cbc_results.get('created_at'))
+        })
+        
+        if has_detailed_prediction:
+            st.markdown("**Latest Prediction Result:**")
+            st.json({
+                'cancer_probability_pct': detailed_prediction.get('cancer_probability_pct'),
+                'model_used': detailed_prediction.get('model_used'),
+                'missing_features': detailed_prediction.get('missing_features', []),
+                'imputed_count': detailed_prediction.get('imputed_count', 0)
             })
-        
-        bio_df = pd.DataFrame(bio_data)
-        _render_dataframe(bio_df)
-        
-        # Biomarker visualization
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Create bar chart of key biomarkers
-            key_biomarkers = ['WBC', 'RBC', 'Hemoglobin', 'Platelets']
-            if all(bio in biomarkers for bio in key_biomarkers):
-                fig_bar = go.Figure(data=[
-                    go.Bar(
-                        x=key_biomarkers,
-                        y=[biomarkers[bio] for bio in key_biomarkers],
-                        marker_color=['green' if biomarker_analysis[bio]['status'] == 'Normal' 
-                                    else 'red' for bio in key_biomarkers]
-                    )
-                ])
-                fig_bar.update_layout(title="Key Biomarkers", height=400)
-                _render_plotly_chart(fig_bar)
-        
-        with col2:
-            # NLR trend (mock data for demonstration)
-            if 'NLR' in biomarkers:
-                dates = pd.date_range(start='2024-01-01', periods=6, freq='ME')
-                nlr_values = [2.1, 2.3, 1.9, biomarkers['NLR'], 2.4, 2.0]
-                
-                fig_trend = px.line(
-                    x=dates,
-                    y=nlr_values,
-                    title="NLR Trend Over Time",
-                    labels={'x': 'Date', 'y': 'NLR Ratio'}
-                )
-                fig_trend.add_hline(y=3.0, line_dash="dash", line_color="red", 
-                                  annotation_text="High Risk Threshold")
-                
-                _render_plotly_chart(fig_trend)
 
 def show_about_page():
     """About us page with team profiles"""

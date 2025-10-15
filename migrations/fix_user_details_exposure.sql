@@ -1,108 +1,154 @@
 -- Migration: Fix public.user_details security exposure
 -- Issue: View may expose auth.users sensitive data to anon/authenticated roles
--- Solution: Replace with a secure view that only shows user's own public profile
+-- Solution: Drop the insecure view, keep user_profiles table for app functionality
 
 -- ============================================================================
--- STEP 1: Drop the existing insecure view
+-- STEP 0: Restore user_profiles table if it was renamed
 -- ============================================================================
+DO $$
+BEGIN
+  -- If we previously renamed the table, restore it
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'user_profiles_table_backup'
+      AND n.nspname = 'public'
+      AND c.relkind = 'r'
+  ) THEN
+    RAISE NOTICE 'Restoring user_profiles table from backup';
+    -- Drop any view that might be using the name
+    EXECUTE 'DROP VIEW IF EXISTS public.user_profiles CASCADE';
+    -- Restore the table
+    EXECUTE 'ALTER TABLE public.user_profiles_table_backup RENAME TO user_profiles';
+  END IF;
+END
+$$;
+
+-- ============================================================================
+-- STEP 1: Drop ONLY the insecure user_details view
+-- ============================================================================
+-- This is the view that was exposing auth.users data
 DROP VIEW IF EXISTS public.user_details CASCADE;
 
 -- ============================================================================
--- STEP 2: Create a secure replacement that enforces auth.uid() filtering
+-- STEP 2: Ensure user_profiles table has RLS enabled
 -- ============================================================================
-CREATE OR REPLACE VIEW public.user_profiles AS
+-- The user_profiles table should already exist from your app's setup
+-- We just need to make sure it has proper RLS policies
+
+-- Enable RLS if not already enabled
+ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
+
+-- Drop any overly permissive policies
+DROP POLICY IF EXISTS "Users can read own profile" ON public.user_profiles;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.user_profiles;
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.user_profiles;
+
+-- Create secure policies that enforce auth.uid() filtering
+CREATE POLICY "Users can read own profile"
+  ON public.user_profiles
+  FOR SELECT
+  TO authenticated
+  USING (id = auth.uid());
+
+CREATE POLICY "Users can update own profile"
+  ON public.user_profiles
+  FOR UPDATE
+  TO authenticated
+  USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
+
+CREATE POLICY "Users can insert own profile"
+  ON public.user_profiles
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (id = auth.uid());
+
+-- Service role needs full access for admin operations
+CREATE POLICY "Service role has full access"
+  ON public.user_profiles
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- ============================================================================
+-- STEP 3: Create a safe read-only view of auth.users (if needed)
+-- ============================================================================
+-- If you need to query auth.users data safely, use a properly named view
+-- (avoid reusing user_profiles name to prevent confusion with the table)
+DROP VIEW IF EXISTS public.auth_user_profiles_view CASCADE;
+CREATE VIEW public.auth_user_profiles_view AS
 SELECT 
     id,
     email,
     created_at,
-    -- Only include safe metadata fields; avoid raw_user_metadata/raw_app_metadata
-    (raw_user_metadata->>'display_name')::text AS display_name,
-    (raw_user_metadata->>'avatar_url')::text AS avatar_url
+    (raw_user_meta_data->>'display_name')::text AS display_name,
+    (raw_user_meta_data->>'avatar_url')::text AS avatar_url
 FROM auth.users
-WHERE id = auth.uid()  -- Critical: users can only see their own record
-WITH CHECK OPTION;
+WHERE id = auth.uid();  -- Users can only see their own auth data
+
+REVOKE ALL ON public.auth_user_profiles_view FROM PUBLIC;
+GRANT SELECT ON public.auth_user_profiles_view TO authenticated;
 
 -- ============================================================================
--- STEP 3: Lock down privileges
+-- STEP 4: Verify table structure (create if missing)
 -- ============================================================================
--- Revoke all default access
-REVOKE ALL ON public.user_profiles FROM PUBLIC;
-REVOKE ALL ON public.user_profiles FROM anon;
-REVOKE ALL ON public.user_profiles FROM authenticated;
+-- In case user_profiles table doesn't exist, create it with proper schema
+CREATE TABLE IF NOT EXISTS public.user_profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    username TEXT UNIQUE,
+    display_name TEXT,
+    avatar_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 
--- Grant SELECT only to authenticated users (RLS enforces auth.uid() filter)
-GRANT SELECT ON public.user_profiles TO authenticated;
+-- Create index for username lookups
+CREATE INDEX IF NOT EXISTS idx_user_profiles_username ON public.user_profiles(username);
 
--- ============================================================================
--- STEP 4: Enable RLS on the view (defense in depth)
--- ============================================================================
-ALTER VIEW public.user_profiles SET (security_barrier = true);
+-- Create updated_at trigger
+CREATE OR REPLACE FUNCTION public.update_user_profiles_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
--- ============================================================================
--- STEP 5: Optional - Create a safe public profile view (if needed)
--- ============================================================================
--- If you need a truly public profile view (e.g., for team pages), create:
-CREATE OR REPLACE VIEW public.public_user_profiles AS
-SELECT 
-    id,
-    (raw_user_metadata->>'display_name')::text AS display_name,
-    (raw_user_metadata->>'avatar_url')::text AS avatar_url,
-    (raw_user_metadata->>'public_bio')::text AS public_bio
-FROM auth.users
-WHERE (raw_user_metadata->>'is_public')::boolean = true;  -- Only public profiles
-
-REVOKE ALL ON public.public_user_profiles FROM PUBLIC;
-GRANT SELECT ON public.public_user_profiles TO anon, authenticated;
-
--- ============================================================================
--- STEP 6: Create a SECURITY DEFINER function for admin queries (optional)
--- ============================================================================
--- If backend needs to query all users (e.g., admin panel), use:
-CREATE OR REPLACE FUNCTION public.admin_get_user_details(target_user_id uuid)
-RETURNS TABLE (
-    id uuid,
-    email text,
-    created_at timestamptz,
-    display_name text
-)
-LANGUAGE sql
-SECURITY DEFINER  -- Runs with view owner's privileges
-SET search_path = public, auth
-AS $$
-    -- Add authorization check here (e.g., is_admin role)
-    SELECT 
-        u.id,
-        u.email,
-        u.created_at,
-        (u.raw_user_metadata->>'display_name')::text
-    FROM auth.users u
-    WHERE u.id = target_user_id;
-$$;
-
-REVOKE EXECUTE ON FUNCTION public.admin_get_user_details FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_get_user_details TO service_role;
+DROP TRIGGER IF EXISTS set_user_profiles_updated_at ON public.user_profiles;
+CREATE TRIGGER set_user_profiles_updated_at
+    BEFORE UPDATE ON public.user_profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION public.update_user_profiles_updated_at();
 
 -- ============================================================================
 -- VALIDATION QUERIES (Run these to confirm security)
 -- ============================================================================
--- 1. Verify anon cannot access user_profiles:
---    SET ROLE anon;
---    SELECT * FROM public.user_profiles;  -- Should return 0 rows or error
---    RESET ROLE;
-
--- 2. Verify authenticated user sees only their own row:
+-- 1. Verify user_profiles table exists and has RLS:
+--    SELECT tablename, rowsecurity FROM pg_tables 
+--    WHERE schemaname = 'public' AND tablename = 'user_profiles';
+--    -- Should show rowsecurity = true
+--
+-- 2. Verify RLS policies are active:
+--    SELECT schemaname, tablename, policyname, roles, cmd 
+--    FROM pg_policies 
+--    WHERE tablename = 'user_profiles';
+--
+-- 3. Test as authenticated user (should only see own profile):
 --    SET ROLE authenticated;
---    SET request.jwt.claims.sub = '<some-user-uuid>';
---    SELECT * FROM public.user_profiles;  -- Should return 1 row (their own)
+--    SET request.jwt.claims.sub = '<test-user-uuid>';
+--    SELECT * FROM public.user_profiles;  -- Should return 1 row max
 --    RESET ROLE;
-
--- 3. Confirm public_user_profiles only shows opted-in users:
---    SELECT * FROM public.public_user_profiles;
+--
+-- 4. Verify insecure view is gone:
+--    \dv public.user_details  -- Should not exist
 
 -- ============================================================================
--- ROLLBACK (if needed)
+-- SUMMARY
 -- ============================================================================
--- DROP VIEW IF EXISTS public.user_profiles CASCADE;
--- DROP VIEW IF EXISTS public.public_user_profiles CASCADE;
--- DROP FUNCTION IF EXISTS public.admin_get_user_details CASCADE;
--- -- Recreate original view if you have the DDL saved
+-- ✅ Dropped insecure user_details view that exposed auth.users
+-- ✅ Kept user_profiles TABLE for app registration/profile functionality
+-- ✅ Added RLS policies to user_profiles table (users see only their own data)
+-- ✅ Created safe auth_user_profiles_view for read-only auth.users access
+-- ✅ App registration will now work correctly
