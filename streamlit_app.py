@@ -42,8 +42,8 @@ def _render_dataframe(data, **kwargs):
 
 
 def _render_plotly_chart(fig):
-    """Render plotly charts with stretch width - no config kwargs to avoid deprecation."""
-    st.plotly_chart(fig, width='stretch')
+    """Render plotly charts with stretch width using config parameter."""
+    st.plotly_chart(fig, config={'displayModeBar': False}, width='stretch')
 
 def init_session_state():
     """Initialize session state variables"""
