@@ -13,6 +13,12 @@ import numpy as np
 import pandas as pd
 from joblib import load
 
+try:
+    import streamlit as st
+    HAS_STREAMLIT = True
+except ImportError:
+    HAS_STREAMLIT = False
+
 
 MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "catboost_cbc.pkl"
 
@@ -398,11 +404,20 @@ _classifier = None
 
 
 def get_classifier():
+    """
+    Return singleton CancerClassifier instance.
+    Uses @st.cache_resource when Streamlit is available for instant reuse.
+    """
     global _classifier
     if _classifier is None:
         _classifier = CancerClassifier()
         _classifier.load_model()
     return _classifier
+
+
+if HAS_STREAMLIT:
+    # Wrap in Streamlit cache for production deployment
+    get_classifier = st.cache_resource(get_classifier)
 
 
 def predict_cancer_risk(cbc_data: Dict) -> Dict:

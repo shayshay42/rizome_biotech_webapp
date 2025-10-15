@@ -35,6 +35,43 @@ from utils.ml_model import (
 )
 from utils.cancer_classifier import predict_cancer_risk
 
+_DATAFRAME_SUPPORTS_STRETCH: Optional[bool] = None
+_PLOTLY_SUPPORTS_STRETCH: Optional[bool] = None
+
+
+def _render_dataframe(data, **kwargs):
+    """Render a dataframe with stretch width when supported, fallback otherwise."""
+    global _DATAFRAME_SUPPORTS_STRETCH
+    if _DATAFRAME_SUPPORTS_STRETCH is None:
+        try:
+            st.dataframe(data, width='stretch', **kwargs)
+        except TypeError:
+            _DATAFRAME_SUPPORTS_STRETCH = False
+            st.dataframe(data, use_container_width=True, **kwargs)
+        else:
+            _DATAFRAME_SUPPORTS_STRETCH = True
+    elif _DATAFRAME_SUPPORTS_STRETCH:
+        st.dataframe(data, width='stretch', **kwargs)
+    else:
+        st.dataframe(data, use_container_width=True, **kwargs)
+
+
+def _render_plotly_chart(fig, **kwargs):
+    """Render plotly charts with stretch width when supported, fallback otherwise."""
+    global _PLOTLY_SUPPORTS_STRETCH
+    if _PLOTLY_SUPPORTS_STRETCH is None:
+        try:
+            st.plotly_chart(fig, width='stretch', **kwargs)
+        except TypeError:
+            _PLOTLY_SUPPORTS_STRETCH = False
+            st.plotly_chart(fig, use_container_width=True, **kwargs)
+        else:
+            _PLOTLY_SUPPORTS_STRETCH = True
+    elif _PLOTLY_SUPPORTS_STRETCH:
+        st.plotly_chart(fig, width='stretch', **kwargs)
+    else:
+        st.plotly_chart(fig, use_container_width=True, **kwargs)
+
 def init_session_state():
     """Initialize session state variables"""
     if 'current_page' not in st.session_state:
@@ -635,7 +672,7 @@ def show_dashboard_page():
                     'thickness': 0.75,
                     'value': 80}}))
         fig_gauge.update_layout(height=350, font={'color': "darkblue", 'family': "Arial"})
-    st.plotly_chart(fig_gauge, width='stretch')
+    _render_plotly_chart(fig_gauge)
     
     # Risk interpretation with detailed prediction if available
     if has_detailed_prediction and 'interpretation' in detailed_prediction:
@@ -691,7 +728,7 @@ def show_dashboard_page():
             })
         
         bio_df = pd.DataFrame(bio_data)
-        st.dataframe(bio_df, width='stretch')
+        _render_dataframe(bio_df)
         
         # Biomarker visualization
         col1, col2 = st.columns(2)
@@ -709,7 +746,7 @@ def show_dashboard_page():
                     )
                 ])
                 fig_bar.update_layout(title="Key Biomarkers", height=400)
-                st.plotly_chart(fig_bar, width='stretch')
+                _render_plotly_chart(fig_bar)
         
         with col2:
             # NLR trend (mock data for demonstration)
@@ -726,7 +763,7 @@ def show_dashboard_page():
                 fig_trend.add_hline(y=3.0, line_dash="dash", line_color="red", 
                                   annotation_text="High Risk Threshold")
                 
-                st.plotly_chart(fig_trend, width='stretch')
+                _render_plotly_chart(fig_trend)
 
 def show_about_page():
     """About us page with team profiles"""
