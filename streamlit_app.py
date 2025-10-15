@@ -35,42 +35,15 @@ from utils.ml_model import (
 )
 from utils.cancer_classifier import predict_cancer_risk
 
-_DATAFRAME_SUPPORTS_STRETCH: Optional[bool] = None
-_PLOTLY_SUPPORTS_STRETCH: Optional[bool] = None
-
 
 def _render_dataframe(data, **kwargs):
-    """Render a dataframe with stretch width when supported, fallback otherwise."""
-    global _DATAFRAME_SUPPORTS_STRETCH
-    if _DATAFRAME_SUPPORTS_STRETCH is None:
-        try:
-            st.dataframe(data, width='stretch', **kwargs)
-        except TypeError:
-            _DATAFRAME_SUPPORTS_STRETCH = False
-            st.dataframe(data, use_container_width=True, **kwargs)
-        else:
-            _DATAFRAME_SUPPORTS_STRETCH = True
-    elif _DATAFRAME_SUPPORTS_STRETCH:
-        st.dataframe(data, width='stretch', **kwargs)
-    else:
-        st.dataframe(data, use_container_width=True, **kwargs)
+    """Render a dataframe with stretch width (Streamlit 1.50.0+)."""
+    st.dataframe(data, width='stretch', **kwargs)
 
 
-def _render_plotly_chart(fig, **kwargs):
-    """Render plotly charts with stretch width when supported, fallback otherwise."""
-    global _PLOTLY_SUPPORTS_STRETCH
-    if _PLOTLY_SUPPORTS_STRETCH is None:
-        try:
-            st.plotly_chart(fig, width='stretch', **kwargs)
-        except TypeError:
-            _PLOTLY_SUPPORTS_STRETCH = False
-            st.plotly_chart(fig, use_container_width=True, **kwargs)
-        else:
-            _PLOTLY_SUPPORTS_STRETCH = True
-    elif _PLOTLY_SUPPORTS_STRETCH:
-        st.plotly_chart(fig, width='stretch', **kwargs)
-    else:
-        st.plotly_chart(fig, use_container_width=True, **kwargs)
+def _render_plotly_chart(fig):
+    """Render plotly charts with stretch width - no config kwargs to avoid deprecation."""
+    st.plotly_chart(fig, width='stretch')
 
 def init_session_state():
     """Initialize session state variables"""
@@ -775,7 +748,7 @@ def show_dashboard_page():
     # Style the dataframe
     st.dataframe(
         df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "Feature": st.column_config.TextColumn("Feature", width="small"),
